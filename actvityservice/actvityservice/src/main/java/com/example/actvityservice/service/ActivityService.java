@@ -34,8 +34,8 @@ public class ActivityService {
         activityResponse.setId(activity.getId());
         activityResponse.setUserId(activity.getUserId());
         activityResponse.setType(activity.getType());
-        activityResponse.setDuration(activityResponse.getDuration());
-        activityResponse.setCaloriesBurned(activityResponse.getCaloriesBurned());
+        activityResponse.setDuration(activity.getDuration());
+        activityResponse.setCaloriesBurned(activity.getCaloriesBurned());
         activityResponse.setStartTime(activity.getStartTime());
         activityResponse.setAdditionalMetrics(activity.getAdditionalMetrics());
         activityResponse.setCreatedAt(activity.getCreatedAt());

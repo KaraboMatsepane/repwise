@@ -13,7 +13,7 @@ import org.springframework.data.mongodb.core.mapping.Field;
 import java.time.LocalDateTime;
 import java.util.Map;
 
-@Document(collation = "Activities")
+@Document(collection = "activities")
 @Data
 @Builder
 @AllArgsConstructor
