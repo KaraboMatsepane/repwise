@@ -5,6 +5,9 @@ import com.repwise.activityservice.dto.ActivityResponse;
 import com.repwise.activityservice.model.Activity;
 import com.repwise.activityservice.repository.ActivityRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -16,16 +19,30 @@ import java.util.List;
  * {@link UserValidationService}, which asks the user service. Persistence is delegated to
  * {@link ActivityRepository}, and entities are converted to {@link ActivityResponse} objects
  * before they leave this class.
+ *
+ * <p>After an activity is saved it is also published to RabbitMQ so other services, such as the
+ * AI service, can react to it.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ActivityService {
 
     private final ActivityRepository repository;
     private final UserValidationService userValidationService;
+    private final RabbitTemplate rabbitTemplate;
+
+    @Value("${rabbitmq.exchange.name}")
+    private String exchange;
+
+    @Value("${rabbitmq.routing.key}")
+    private String routingKey;
 
     /**
-     * Validates the user and then saves a new activity.
+     * Validates the user, saves a new activity and publishes it to RabbitMQ.
+     *
+     * <p>A publishing failure is logged but does not fail the request, because the activity is
+     * already saved. In that case other services will not hear about the activity.
      *
      * @param request the activity details, including the owning user's identifier
      * @return the saved activity, including its generated identifier and audit timestamps
@@ -48,7 +65,15 @@ public class ActivityService {
 
         Activity savedActivity = repository.save(activity);
 
-        return mapToResponse(savedActivity);
+        ActivityResponse response = mapToResponse(savedActivity);
+
+        try {
+            rabbitTemplate.convertAndSend(exchange, routingKey, response);
+        } catch (Exception e) {
+            log.error("Failed to publish activity {} to RabbitMQ", response.getId(), e);
+        }
+
+        return response;
     }
 
     /**
