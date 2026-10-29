@@ -8,11 +8,11 @@
 		<version>4.1.2</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
-	<groupId>com.fitness</groupId>
+	<groupId>com.repwise</groupId>
 	<artifactId>aiservice</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name/>
-	<description/>
+	<name>aiservice</name>
+	<description>Repwise aiservice: Personalised activity recommendations</description>
 	<url/>
 	<licenses>
 		<license/>

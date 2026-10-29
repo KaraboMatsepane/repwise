@@ -1,6 +1,8 @@
-# Fitness App
+# Repwise
 
-A fitness tracking platform built as a set of independent Spring Boot microservices. Services discover each other through a Eureka registry, own their own data stores, and communicate over load-balanced HTTP.
+> Track every rep. Train smarter.
+
+Repwise is a fitness tracking platform built as a set of independent Spring Boot microservices. Services discover each other through a Eureka registry, own their own data stores, and communicate over load-balanced HTTP.
 
 ![Java](https://img.shields.io/badge/Java-21-orange)
 ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.2-6DB33F)
@@ -122,7 +124,7 @@ POST /api/activities
 ### Prerequisites
 
 - JDK 21
-- PostgreSQL running on `localhost:5432` with a database named `fitness_users_db`
+- PostgreSQL running on `localhost:5432` with a database named `repwise_users_db`
 - A MongoDB instance (local or Atlas)
 
 ### Configuration
@@ -138,7 +140,7 @@ Secrets are read from environment variables, never committed.
 ```bash
 export DB_USERNAME=postgres
 export DB_PASSWORD=your_password
-export MONGODB_URI="mongodb://localhost:27017/fitnessapp"
+export MONGODB_URI="mongodb://localhost:27017/repwise"
 ```
 
 ### Running
@@ -174,7 +176,7 @@ curl localhost:8001/api/activities -H "X-User-ID: <id>"
 ## Project Structure
 
 ```
-fitnessApp/
+repwise/
 ├── eureka/            Service registry
 ├── userservice/       Users and profiles (PostgreSQL)
 ├── activityservice/   Workout tracking (MongoDB)
