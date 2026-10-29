@@ -18,9 +18,18 @@
         <module name="userservice" />
       </profile>
     </annotationProcessing>
+    <bytecodeTargetLevel>
+      <module name="actvityservice" target="21" />
+      <module name="actvityservice (1)" target="1.5" />
+      <module name="aiservice" target="21" />
+      <module name="eureka" target="21" />
+    </bytecodeTargetLevel>
   </component>
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="actvityservice" options="-parameters" />
+      <module name="aiservice" options="-parameters" />
+      <module name="eureka" options="-parameters" />
       <module name="userservice" options="-parameters" />
     </option>
   </component>
