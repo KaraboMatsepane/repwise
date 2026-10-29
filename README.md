@@ -21,7 +21,7 @@ A fitness tracking platform built as a set of independent Spring Boot microservi
         |                         |                         |
 +-------+--------+      +---------+--------+      +---------+--------+
 |  User Service  |<-----+ Activity Service |      |    AI Service    |
-|   port 8080    | HTTP |    port 8001     |      |    port 8002     |
+|   port 8000    | HTTP |    port 8001     |      |    port 8002     |
 |  (PostgreSQL)  |      |    (MongoDB)     |      |    (MongoDB)     |
 +----------------+      +------------------+      +------------------+
 ```
@@ -33,9 +33,20 @@ Each service is a self-contained Maven project with its own wrapper, build, conf
 | Service | Directory | Port | Datastore | Status |
 |---|---|---|---|---|
 | Eureka Server | `eureka` | 8761 | none | Working |
-| User Service | `userservice` | 8080 | PostgreSQL | Working |
+| User Service | `userservice` | 8000 | PostgreSQL | Working |
 | Activity Service | `activityservice` | 8001 | MongoDB | Working |
 | AI Service | `aiservice` | 8002 | MongoDB | In progress |
+
+### Ports
+
+Each service has a fixed port so they can all run side by side locally. Change one with `server.port` in the service's `application.properties` (or `SERVER_PORT` in the environment).
+
+| Service | Port | URL |
+|---|---|---|
+| Eureka Server | 8761 | http://localhost:8761 |
+| User Service | 8000 | http://localhost:8000 |
+| Activity Service | 8001 | http://localhost:8001 |
+| AI Service | 8002 | http://localhost:8002 |
 
 ### Eureka Server
 Service registry that all other services register with. It does not register itself and does not fetch a registry.
@@ -53,7 +64,7 @@ Serves personalised recommendations for logged activities. The data model (impro
 
 ## API Reference
 
-### User Service (`:8080`)
+### User Service (`:8000`)
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -147,7 +158,7 @@ Open the Eureka dashboard at http://localhost:8761 to confirm the services have 
 
 ```bash
 # 1. Register a user and note the returned id
-curl -X POST localhost:8080/api/users/register \
+curl -X POST localhost:8000/api/users/register \
   -H "Content-Type: application/json" \
   -d '{"email":"jane@example.com","password":"secret123","firstName":"Jane","lastName":"Doe"}'
 
