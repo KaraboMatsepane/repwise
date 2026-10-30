@@ -2,6 +2,8 @@ package com.repwise.activityservice.service;
 
 import com.repwise.activityservice.dto.ActivityRequest;
 import com.repwise.activityservice.dto.ActivityResponse;
+import com.repwise.activityservice.exception.ActivityNotFoundException;
+import com.repwise.activityservice.exception.InvalidUserException;
 import com.repwise.activityservice.model.Activity;
 import com.repwise.activityservice.repository.ActivityRepository;
 import lombok.RequiredArgsConstructor;
@@ -46,13 +48,14 @@ public class ActivityService {
      *
      * @param request the activity details, including the owning user's identifier
      * @return the saved activity, including its generated identifier and audit timestamps
-     * @throws RuntimeException if the user is invalid or the user service cannot be reached
+     * @throws InvalidUserException if the user does not exist
+     * @throws UserServiceUnavailableException if the user service cannot be reached
      */
     public ActivityResponse trackActivity(ActivityRequest request) {
 
         boolean validUser = userValidationService.validateUser(request.getUserId());
 
-        if (!validUser) throw new RuntimeException("Invalid user: " + request.getUserId());
+        if (!validUser) throw new InvalidUserException(request.getUserId());
 
         Activity activity = Activity.builder()
                 .userId(request.getUserId())
@@ -115,11 +118,11 @@ public class ActivityService {
      *
      * @param activityId the identifier of the activity
      * @return the activity
-     * @throws RuntimeException if no activity exists with the given identifier
+     * @throws ActivityNotFoundException if no activity exists with the given identifier
      */
     public ActivityResponse getActivityById(String activityId) {
         return repository.findById(activityId)
                 .map(this::mapToResponse)
-                .orElseThrow(() -> new RuntimeException("activity with id " + activityId + " not found"));
+                .orElseThrow(() -> new ActivityNotFoundException(activityId));
     }
 }

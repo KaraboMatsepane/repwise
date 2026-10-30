@@ -2,6 +2,8 @@ package com.repwise.userservice.service;
 
 import com.repwise.userservice.dto.RegisterRequest;
 import com.repwise.userservice.dto.UserResponse;
+import com.repwise.userservice.exception.EmailAlreadyExistsException;
+import com.repwise.userservice.exception.UserNotFoundException;
 import com.repwise.userservice.model.User;
 import com.repwise.userservice.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -27,11 +29,11 @@ public class UserService {
      *
      * @param userId the identifier of the user
      * @return the user's profile
-     * @throws RuntimeException if no user exists with the given identifier
+     * @throws UserNotFoundException if no user exists with the given identifier
      */
     public UserResponse getProfile(String userId) {
         User user = repository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new UserNotFoundException(userId));
 
         return createUserResponse(user);
     }
@@ -43,12 +45,12 @@ public class UserService {
      *
      * @param request the registration details
      * @return the persisted user, including generated identifier and timestamps
-     * @throws RuntimeException if a user with the same email already exists
+     * @throws EmailAlreadyExistsException if a user with the same email already exists
      */
     public UserResponse register(RegisterRequest request) {
 
         if (repository.existsByEmail(request.getEmail())){
-            throw new RuntimeException("Email already exists.");
+            throw new EmailAlreadyExistsException(request.getEmail());
         }
 
         User user = new User();

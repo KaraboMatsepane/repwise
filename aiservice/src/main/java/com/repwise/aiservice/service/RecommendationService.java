@@ -1,5 +1,6 @@
 package com.repwise.aiservice.service;
 
+import com.repwise.aiservice.exception.RecommendationNotFoundException;
 import com.repwise.aiservice.model.Recommendation;
 import com.repwise.aiservice.repository.RecommendationRepository;
 import lombok.RequiredArgsConstructor;
@@ -34,12 +35,11 @@ public class RecommendationService {
      *
      * @param activityId the identifier of the activity
      * @return the recommendation
-     * @throws RuntimeException if no recommendation exists for the activity
+     * @throws RecommendationNotFoundException if no recommendation exists for the activity
      */
     public Recommendation getActivityRecommendation(String activityId) {
         return repository.findByActivityId(activityId).orElseThrow(
-                () -> new RuntimeException(
-                        "No recommendation found for this activity " + activityId)
+                () -> new RecommendationNotFoundException(activityId)
         );
     }
 }

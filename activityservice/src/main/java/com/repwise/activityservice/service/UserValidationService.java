@@ -1,5 +1,6 @@
 package com.repwise.activityservice.service;
 
+import com.repwise.activityservice.exception.UserServiceUnavailableException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -24,8 +25,8 @@ public class UserValidationService {
      *
      * @param userId the identifier of the user
      * @return {@code true} if the user service confirms the user exists
-     * @throws RuntimeException if the user service responds with an error status, cannot be
-     *         reached, or fails in any other way
+     * @throws UserServiceUnavailableException if the user service responds with an error status
+     *         or cannot be reached
      */
     public boolean validateUser(String userId) {
         try {
@@ -37,11 +38,10 @@ public class UserValidationService {
                             .block()
             );
         } catch (WebClientResponseException e) {
-            throw new RuntimeException("user id " + userId + " not found");
+            throw new UserServiceUnavailableException(
+                    "User service responded with status " + e.getStatusCode().value(), e);
         } catch (WebClientRequestException e) {
-            throw new RuntimeException("Request could not reach the user service");
-        } catch (Exception e) {
-            throw new RuntimeException("Unexpected error: something went wrong");
+            throw new UserServiceUnavailableException("Request could not reach the user service", e);
         }
     }
 }
