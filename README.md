@@ -41,6 +41,7 @@ Each service is a self-contained Maven project with its own wrapper, build, conf
 
 | Service | Directory | Port | Datastore | Status |
 |---|---|---|---|---|
+| Config Server | `config-server` | 8888 | none | Working |
 | Eureka Server | `eureka` | 8761 | none | Working |
 | User Service | `userservice` | 8000 | PostgreSQL | Working |
 | Activity Service | `activityservice` | 8001 | MongoDB | Working |
@@ -49,14 +50,29 @@ Each service is a self-contained Maven project with its own wrapper, build, conf
 
 ### Ports
 
-Each service has a fixed port so they can all run side by side locally. Change one with `server.port` in the service's `application.properties` (or `SERVER_PORT` in the environment).
+Each service has a fixed port so they can all run side by side locally. Ports are set in each service's file under `config-server/src/main/resources/configs/` (`server.port`), or can be overridden with `SERVER_PORT` in the environment.
 
 | Service | Port | URL |
 |---|---|---|
+| Config Server | 8888 | http://localhost:8888 |
 | Eureka Server | 8761 | http://localhost:8761 |
 | User Service | 8000 | http://localhost:8000 |
 | Activity Service | 8001 | http://localhost:8001 |
 | AI Service | 8002 | http://localhost:8002 |
+
+### Config Server
+Central configuration for the User, Activity and AI services. It serves property files from `config-server/src/main/resources/configs/` (Spring Cloud Config's `native` profile):
+
+| File | Applies to |
+|---|---|
+| `application.properties` | every client: Eureka URL, RabbitMQ connection and the queue, exchange and routing key names |
+| `user-service.properties` | User Service: port, PostgreSQL |
+| `activityservice.properties` | Activity Service: port, MongoDB |
+| `aiservice.properties` | AI Service: port, MongoDB, Gemini |
+
+Each of those services keeps only `spring.application.name` and `spring.config.import=configserver:...` in its own `application.properties`, and fetches the rest at startup. Because the RabbitMQ names now live in one shared file, the Activity and AI services can no longer drift apart.
+
+Secrets are not stored in the config files. Values such as `${MONGODB_URI}` are served unresolved and each client fills them in from its own environment variables, so the config server does not need them. Changes to the files take effect after the config server is rebuilt and the clients restart. Eureka is deliberately not a config client, so the registry does not depend on the config server.
 
 ### Eureka Server
 Service registry that all other services register with. It does not register itself and does not fetch a registry.
@@ -126,7 +142,7 @@ POST /api/activities
 ## Tech Stack
 
 - Java 21, Spring Boot 4.1.2, Spring Cloud 2025.1.4
-- Spring Web MVC, Spring WebFlux (`WebClient`), Spring Cloud Netflix Eureka
+- Spring Web MVC, Spring WebFlux (`WebClient`), Spring Cloud Netflix Eureka, Spring Cloud Config
 - RabbitMQ through Spring AMQP, with JSON message conversion
 - Google Gemini API for recommendation generation
 - Spring Data JPA with PostgreSQL, Spring Data MongoDB
@@ -155,6 +171,7 @@ Secrets are read from environment variables, never committed.
 |---|---|---|
 | `DB_USERNAME` | User Service | PostgreSQL username |
 | `DB_PASSWORD` | User Service | PostgreSQL password |
+| `CONFIG_SERVER_URL` | User, Activity and AI Services | Config server address, default `http://localhost:8888` |
 | `MONGODB_URI` | Activity Service, AI Service | MongoDB connection string |
 | `GEMINI_API_KEY` | AI Service | Gemini API key (required) |
 | `GEMINI_API_URL` | AI Service | Gemini endpoint, defaults to `gemini-2.5-flash` `generateContent` |
@@ -174,9 +191,10 @@ export GEMINI_API_KEY=your_gemini_key
 
 ### Running
 
-Start RabbitMQ and the registry first, then the rest in any order. Each in its own terminal:
+Start RabbitMQ and the config server first, then the registry, then the rest in any order. The User, Activity and AI services fail to start if the config server is not reachable. Each in its own terminal:
 
 ```bash
+cd config-server   && ./mvnw spring-boot:run
 cd eureka          && ./mvnw spring-boot:run
 cd userservice     && ./mvnw spring-boot:run
 cd activityservice && ./mvnw spring-boot:run
@@ -208,6 +226,7 @@ After step 2, the AI Service log should show the saved recommendation, and `GET 
 
 ```
 repwise/
+├── config-server/     Centralised configuration
 ├── eureka/            Service registry
 ├── userservice/       Users and profiles (PostgreSQL)
 ├── activityservice/   Workout tracking (MongoDB)
@@ -222,6 +241,7 @@ Each service follows the same layered layout: `controller`, `service`, `reposito
 - [x] Event-driven flow from Activity Service to AI Service via RabbitMQ
 - [x] Generate AI recommendations with Gemini for logged activities
 - [x] Save generated recommendations to MongoDB so the AI Service endpoints return them
+- [x] Centralised configuration with a config server
 - [ ] Avoid duplicate recommendations when a message is redelivered
 - [ ] Retry limits and a dead-letter queue for failed messages
 - [ ] API gateway as a single entry point

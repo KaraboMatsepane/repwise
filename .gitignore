@@ -5,3 +5,6 @@ out/
 *:Zone.Identifier
 HELP.md
 .mvn/wrapper/maven-wrapper.jar
+
+# Windows-only Maven wrapper script (this project is developed on Linux/WSL)
+mvnw.cmd
