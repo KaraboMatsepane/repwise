@@ -2,7 +2,7 @@
 
 > Track every rep. Train smarter.
 
-Repwise is a fitness tracking platform built as a set of independent Spring Boot microservices. Services discover each other through a Eureka registry, own their own data stores, and communicate over load-balanced HTTP and asynchronous RabbitMQ messages.
+Repwise is a fitness tracking platform built as a set of independent Spring Boot microservices. Clients talk to a single API gateway. Services find each other through a Eureka registry, load their settings from a central config server, own their own data stores, and communicate over load-balanced HTTP and asynchronous RabbitMQ messages.
 
 ![Java](https://img.shields.io/badge/Java-21-orange)
 ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.2-6DB33F)
@@ -14,28 +14,36 @@ Repwise is a fitness tracking platform built as a set of independent Spring Boot
 ## Architecture
 
 ```
-                        +--------------------+
-                        |   Eureka Server    |
-                        |     port 8761      |
-                        +---------+----------+
-                                  ^
-              register / discover |
-        +-------------------------+-------------------------+
-        |                         |                         |
-+-------+--------+      +---------+--------+      +---------+--------+
-|  User Service  |<-----+ Activity Service |      |    AI Service    |
-|   port 8000    | HTTP |    port 8001     |      |    port 8002     |
-|  (PostgreSQL)  |      |    (MongoDB)     |      |    (MongoDB)     |
-+----------------+      +------------------+      +------------------+
-                                  |                         ^   |
-                                  |   RabbitMQ              |   | HTTPS
-                                  |   activity.exchange     |   v
-                                  +--> activity.queue ------+  Gemini API
+                         client
+                           |
+                           v
+                  +-----------------+         +-----------------+
+                  |   API Gateway   |         |  Config Server  |
+                  |    port 8080    |         |    port 8888    |
+                  +--------+--------+         +--------+--------+
+                           |                           ^
+          routes by path   |   (gateway, user, activity and ai
+        (lb:// via Eureka) |    services fetch their config at startup)
+                           |
+        +------------------+------------------+
+        |                  |                  |
++-------+--------+  +------+---------+  +-----+----------+
+|  User Service  |<-+ Activity Svc   |  |   AI Service   |
+|   port 8000    |  |   port 8001    |  |   port 8002    |
+|  (PostgreSQL)  |  |   (MongoDB)    |  |   (MongoDB)    |
++----------------+  +-------+--------+  +--+----------+--+
+                            |              ^          |
+                            | publish      | consume  | HTTPS
+                            v              |          v
+                     activity.exchange --> activity.queue    Gemini API
+                              (RabbitMQ)
+
+All services register with the Eureka Server (port 8761).
 ```
 
-When an activity is saved, the Activity Service publishes it to RabbitMQ and returns immediately. The AI Service consumes it from the queue and asks Gemini for a personalised recommendation.
+When an activity is saved, the Activity Service publishes it to RabbitMQ and returns immediately. The AI Service consumes it from the queue, asks Gemini for a personalised recommendation and stores the result.
 
-Each service is a self-contained Maven project with its own wrapper, build, configuration and database. There is deliberately no shared parent POM or shared library, so any service can be built, tested, deployed and scaled on its own.
+Each service is a self-contained Maven project with its own wrapper, build and database. There is deliberately no shared parent POM or shared library, so any service can be built, tested, deployed and scaled on its own.
 
 ## Services
 
@@ -49,35 +57,28 @@ Each service is a self-contained Maven project with its own wrapper, build, conf
 | AI Service | `aiservice` | 8002 | MongoDB | In progress |
 | RabbitMQ (broker) | external | 5672 (AMQP), 15672 (management UI) | none | Required |
 
-### Ports
-
-Each service has a fixed port so they can all run side by side locally. Ports are set in each service's file under `config-server/src/main/resources/configs/` (`server.port`), or can be overridden with `SERVER_PORT` in the environment.
-
-| Service | Port | URL |
-|---|---|---|
-| Config Server | 8888 | http://localhost:8888 |
-| Eureka Server | 8761 | http://localhost:8761 |
-| API Gateway | 8080 | http://localhost:8080 |
-| User Service | 8000 | http://localhost:8000 |
-| Activity Service | 8001 | http://localhost:8001 |
-| AI Service | 8002 | http://localhost:8002 |
+Each service has a fixed port so they can all run side by side locally. Ports live in `server.port` in the service's file under `config-server/src/main/resources/configs/` (Eureka and the config server keep theirs in their own `application.properties`), and can be overridden with `SERVER_PORT` in the environment.
 
 ### Config Server
-Central configuration for the User, Activity and AI services. It serves property files from `config-server/src/main/resources/configs/` (Spring Cloud Config's `native` profile):
+Central configuration for the Gateway, User, Activity and AI services. It serves property files from `config-server/src/main/resources/configs/` (Spring Cloud Config's `native` profile). A file's name must match the client's `spring.application.name`:
 
 | File | Applies to |
 |---|---|
-| `application.properties` | every client: Eureka URL, RabbitMQ connection and the queue, exchange and routing key names |
+| `application.properties` | every client: Eureka URL, RabbitMQ connection, and the queue, exchange and routing key names |
+| `gateway.properties` | Gateway: port and routes |
 | `user-service.properties` | User Service: port, PostgreSQL |
 | `activity-service.properties` | Activity Service: port, MongoDB |
 | `ai-service.properties` | AI Service: port, MongoDB, Gemini |
 
-Each of those services keeps only `spring.application.name` and `spring.config.import=configserver:...` in its own `application.properties`, and fetches the rest at startup. Because the RabbitMQ names now live in one shared file, the Activity and AI services can no longer drift apart.
+Each client keeps only `spring.application.name` and `spring.config.import=configserver:...` in its own `application.properties` and fetches the rest at startup. Because the RabbitMQ names live in one shared file, the Activity and AI services cannot drift apart.
 
-Secrets are not stored in the config files. Values such as `${MONGODB_URI}` are served unresolved and each client fills them in from its own environment variables, so the config server does not need them. Changes to the files take effect after the config server is rebuilt and the clients restart. Eureka is deliberately not a config client, so the registry does not depend on the config server.
+Secrets are not stored in the config files. Values such as `${MONGODB_URI}` are served unresolved and each client fills them in from its own environment variables, so the config server never needs them. Changes to the files take effect after the config server is rebuilt and the clients are restarted.
+
+### Eureka Server
+Service registry that all other services register with. It does not register itself, does not fetch a registry, and is deliberately not a config client, so the registry does not depend on the config server.
 
 ### API Gateway
-Single entry point for clients (Spring Cloud Gateway Server MVC). It registers with Eureka and forwards requests by path, using load-balanced `lb://` URIs resolved through the registry. Its routes are defined in `config-server/src/main/resources/configs/gateway.properties`:
+Single entry point for clients (reactive Spring Cloud Gateway Server WebFlux, running on Netty). It registers with Eureka and forwards requests by path to load-balanced `lb://` URIs resolved through the registry. Routes are defined in `gateway.properties`:
 
 | Path | Forwarded to |
 |---|---|
@@ -85,27 +86,30 @@ Single entry point for clients (Spring Cloud Gateway Server MVC). It registers w
 | `/api/activities/**` | `ACTIVITY-SERVICE` |
 | `/api/recommendations/**` | `AI-SERVICE` |
 
-Paths that match no route return 404. Headers such as `X-User-ID` pass through unchanged. The services stay reachable directly on their own ports, but go through the gateway when you can.
-
-### Eureka Server
-Service registry that all other services register with. It does not register itself and does not fetch a registry.
+Paths that match no route return 404. Headers such as `X-User-ID` pass through unchanged. If no instance of a target service is registered, the gateway returns 503. Right after a service starts there can be a short delay (about half a minute) before the gateway sees it. The services stay reachable directly on their own ports.
 
 ### User Service
-Handles registration and profile lookup, with Bean Validation on incoming requests (valid email, password of at least 6 characters). Users are stored in PostgreSQL through Spring Data JPA, with generated UUID identifiers, creation and update timestamps, and a `USER` or `ADMIN` role. Also exposes a lightweight validation endpoint used by other services.
+Handles registration and profile lookup, with Bean Validation on incoming requests (valid email, password of at least 6 characters). Users are stored in PostgreSQL through Spring Data JPA, with generated UUID identifiers, creation and update timestamps, and a `USER` or `ADMIN` role. It also exposes a lightweight validation endpoint used by other services.
 
 ### Activity Service
 Records and retrieves workouts. Before saving an activity it calls the User Service through a load-balanced `WebClient` (`http://USER-SERVICE`, resolved via Eureka) to confirm the user exists, and rejects the request if not. Activities are stored in MongoDB and support a free-form `metrics` map for type-specific data.
 
-After saving, it publishes the activity to RabbitMQ (exchange `activity.exchange`, routing key `activity.tracking`) as JSON. A failure to publish is logged but does not fail the request, so the activity is still saved.
+After saving, it publishes the activity as JSON to RabbitMQ (exchange `activity.exchange`, routing key `activity.tracking`). A failure to publish is logged but does not fail the request, so the activity is still saved.
 
 Supported activity types: `RUNNING`, `SWIMMING`, `WALKING`, `CYCLING`, `WEIGHT_LIFTING`, `PUNCHING_BAG`, `ROPE_SKIPPING`, `AEROBICS`.
 
 ### AI Service
-Serves personalised recommendations for logged activities. The data model (improvements, suggestions and safety guidance per activity), the MongoDB repository, and endpoints to fetch recommendations by user or by activity are in place.
+Generates and serves personalised recommendations for logged activities.
 
-It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. The reply is parsed into a `Recommendation` (a structured analysis of overall, pace, heart rate and calories, plus improvements, suggestions and safety lists) and saved to MongoDB, where the endpoints above can return it. A message whose processing fails is requeued by default, and retry limits and a dead-letter queue are not configured yet, and a redelivered message can produce a duplicate recommendation for the same activity.
+It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. The reply is parsed into a `Recommendation` and saved to MongoDB. A recommendation contains a structured analysis (overall, pace, heart rate, calories) plus lists of improvements, suggestions and safety notes. Endpoints return recommendations by user or by activity.
+
+Known gaps:
+- A message whose processing fails (Gemini error, unparseable reply, database error) is requeued immediately and retried without limit. Retry limits and a dead-letter queue are not configured.
+- A redelivered message can produce a second recommendation for the same activity.
 
 ## API Reference
+
+Every endpoint is available through the gateway at `localhost:8080` and directly on the service's own port.
 
 ### User Service (`:8000`)
 
@@ -155,7 +159,8 @@ POST /api/activities
 ## Tech Stack
 
 - Java 21, Spring Boot 4.1.2, Spring Cloud 2025.1.4
-- Spring Web MVC, Spring WebFlux (`WebClient`), Spring Cloud Netflix Eureka, Spring Cloud Config
+- Spring Web MVC, Spring WebFlux (`WebClient`)
+- Spring Cloud Gateway (WebFlux), Netflix Eureka, Config Server
 - RabbitMQ through Spring AMQP, with JSON message conversion
 - Google Gemini API for recommendation generation
 - Spring Data JPA with PostgreSQL, Spring Data MongoDB
@@ -167,6 +172,7 @@ POST /api/activities
 ### Prerequisites
 
 - JDK 21
+- Linux, macOS or WSL (the Windows `mvnw.cmd` wrapper scripts are not included)
 - PostgreSQL running on `localhost:5432` with a database named `repwise_users_db`
 - A MongoDB instance (local or Atlas)
 - RabbitMQ on `localhost:5672`, for example with Docker:
@@ -178,22 +184,22 @@ POST /api/activities
 
 ### Configuration
 
-Secrets are read from environment variables, never committed.
+Secrets and environment-specific values are read from environment variables, never committed. Each service reads the variables it needs from its own environment, even though the property files that mention them live on the config server.
 
 | Variable | Used by | Purpose |
 |---|---|---|
+| `CONFIG_SERVER_URL` | Gateway, User, Activity and AI Services | Config server address, default `http://localhost:8888` |
 | `DB_USERNAME` | User Service | PostgreSQL username |
 | `DB_PASSWORD` | User Service | PostgreSQL password |
-| `CONFIG_SERVER_URL` | Gateway, User, Activity and AI Services | Config server address, default `http://localhost:8888` |
 | `MONGODB_URI` | Activity Service, AI Service | MongoDB connection string |
 | `GEMINI_API_KEY` | AI Service | Gemini API key (required) |
-| `GEMINI_API_URL` | AI Service | Gemini endpoint, defaults to `gemini-2.5-flash` `generateContent` |
+| `GEMINI_API_URL` | AI Service | Gemini endpoint, defaults to the `gemini-2.5-flash` `generateContent` endpoint |
 | `RABBITMQ_HOST` | Activity Service, AI Service | Broker host, default `localhost` |
 | `RABBITMQ_PORT` | Activity Service, AI Service | Broker port, default `5672` |
 | `RABBITMQ_USERNAME` | Activity Service, AI Service | Broker username, default `guest` |
 | `RABBITMQ_PASSWORD` | Activity Service, AI Service | Broker password, default `guest` |
 
-The queue, exchange and routing key names (`rabbitmq.queue.name`, `rabbitmq.exchange.name`, `rabbitmq.routing.key`) are set in each service's `application.properties` and must be identical in the Activity Service and the AI Service.
+The queue, exchange and routing key names (`rabbitmq.queue.name`, `rabbitmq.exchange.name`, `rabbitmq.routing.key`) are defined once in the config server's shared `application.properties`.
 
 ```bash
 export DB_USERNAME=postgres
@@ -204,7 +210,7 @@ export GEMINI_API_KEY=your_gemini_key
 
 ### Running
 
-Start RabbitMQ and the config server first, then the registry, then the rest in any order. The Gateway, User, Activity and AI services fail to start if the config server is not reachable. Each in its own terminal:
+Start RabbitMQ and the config server first, then the registry, then the rest. The Gateway, User, Activity and AI services fail to start if the config server is not reachable. Each in its own terminal:
 
 ```bash
 cd config-server   && ./mvnw spring-boot:run
@@ -215,28 +221,31 @@ cd activityservice && ./mvnw spring-boot:run
 cd aiservice       && ./mvnw spring-boot:run
 ```
 
-Open the Eureka dashboard at http://localhost:8761 to confirm the services have registered.
+Open the Eureka dashboard at http://localhost:8761 to confirm the services have registered. The gateway needs a short time to see newly registered services.
 
 ### Try it
 
+All calls go through the gateway on port 8080:
+
 ```bash
 # 1. Register a user and note the returned id
-curl -X POST localhost:8000/api/users/register \
+curl -X POST localhost:8080/api/users/register \
   -H "Content-Type: application/json" \
   -d '{"email":"jane@example.com","password":"secret123","firstName":"Jane","lastName":"Doe"}'
 
 # 2. Track an activity for that user
-curl -X POST localhost:8001/api/activities \
+curl -X POST localhost:8080/api/activities \
   -H "Content-Type: application/json" \
   -d '{"userId":"<id>","type":"RUNNING","duration":45,"caloriesBurned":420,"startTime":"2026-10-29T06:30:00"}'
 
 # 3. List the user's activities
-curl localhost:8001/api/activities -H "X-User-ID: <id>"
+curl localhost:8080/api/activities -H "X-User-ID: <id>"
+
+# 4. Fetch the generated recommendations (give the AI Service a few seconds)
+curl localhost:8080/api/recommendations/user/<id>
 ```
 
-Every call above can also go through the gateway by replacing the service port with `8080` (for example `localhost:8080/api/users/register`).
-
-After step 2, the AI Service log should show the saved recommendation, and `GET localhost:8002/api/recommendations/user/<id>` should return it. You can also watch `activity.queue` in the RabbitMQ management UI.
+After step 2 the AI Service log should show the saved recommendation. You can also watch `activity.queue` in the RabbitMQ management UI.
 
 ## Project Structure
 
@@ -247,21 +256,20 @@ repwise/
 ├── gateway/           API gateway (single entry point)
 ├── userservice/       Users and profiles (PostgreSQL)
 ├── activityservice/   Workout tracking (MongoDB)
-├── aiservice/         Recommendations (MongoDB, generation in progress)
+├── aiservice/         Recommendations (MongoDB, Gemini)
 └── README.md
 ```
 
-Each service follows the same layered layout: `controller`, `service`, `repository`, `model`, `dto` and `config`.
+Each business service follows the same layered layout: `controller`, `service`, `repository`, `model`, `dto` and `config`.
 
 ## Roadmap
 
-- [x] Event-driven flow from Activity Service to AI Service via RabbitMQ
-- [x] Generate AI recommendations with Gemini for logged activities
-- [x] Save generated recommendations to MongoDB so the AI Service endpoints return them
 - [x] Centralised configuration with a config server
-- [ ] Avoid duplicate recommendations when a message is redelivered
-- [ ] Retry limits and a dead-letter queue for failed messages
 - [x] API gateway as a single entry point
+- [x] Event-driven flow from Activity Service to AI Service via RabbitMQ
+- [x] Generate AI recommendations with Gemini and save them to MongoDB
+- [ ] Retry limits and a dead-letter queue for failed messages
+- [ ] Avoid duplicate recommendations when a message is redelivered
 - [ ] Authentication and authorisation
 - [ ] Centralised error handling with proper HTTP status codes
 - [ ] Containerisation with Docker Compose
