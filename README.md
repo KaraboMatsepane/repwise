@@ -43,6 +43,7 @@ Each service is a self-contained Maven project with its own wrapper, build, conf
 |---|---|---|---|---|
 | Config Server | `config-server` | 8888 | none | Working |
 | Eureka Server | `eureka` | 8761 | none | Working |
+| API Gateway | `gateway` | 8080 | none | Working |
 | User Service | `userservice` | 8000 | PostgreSQL | Working |
 | Activity Service | `activityservice` | 8001 | MongoDB | Working |
 | AI Service | `aiservice` | 8002 | MongoDB | In progress |
@@ -56,6 +57,7 @@ Each service has a fixed port so they can all run side by side locally. Ports ar
 |---|---|---|
 | Config Server | 8888 | http://localhost:8888 |
 | Eureka Server | 8761 | http://localhost:8761 |
+| API Gateway | 8080 | http://localhost:8080 |
 | User Service | 8000 | http://localhost:8000 |
 | Activity Service | 8001 | http://localhost:8001 |
 | AI Service | 8002 | http://localhost:8002 |
@@ -67,12 +69,23 @@ Central configuration for the User, Activity and AI services. It serves property
 |---|---|
 | `application.properties` | every client: Eureka URL, RabbitMQ connection and the queue, exchange and routing key names |
 | `user-service.properties` | User Service: port, PostgreSQL |
-| `activityservice.properties` | Activity Service: port, MongoDB |
-| `aiservice.properties` | AI Service: port, MongoDB, Gemini |
+| `activity-service.properties` | Activity Service: port, MongoDB |
+| `ai-service.properties` | AI Service: port, MongoDB, Gemini |
 
 Each of those services keeps only `spring.application.name` and `spring.config.import=configserver:...` in its own `application.properties`, and fetches the rest at startup. Because the RabbitMQ names now live in one shared file, the Activity and AI services can no longer drift apart.
 
 Secrets are not stored in the config files. Values such as `${MONGODB_URI}` are served unresolved and each client fills them in from its own environment variables, so the config server does not need them. Changes to the files take effect after the config server is rebuilt and the clients restart. Eureka is deliberately not a config client, so the registry does not depend on the config server.
+
+### API Gateway
+Single entry point for clients (Spring Cloud Gateway Server MVC). It registers with Eureka and forwards requests by path, using load-balanced `lb://` URIs resolved through the registry. Its routes are defined in `config-server/src/main/resources/configs/gateway.properties`:
+
+| Path | Forwarded to |
+|---|---|
+| `/api/users/**` | `USER-SERVICE` |
+| `/api/activities/**` | `ACTIVITY-SERVICE` |
+| `/api/recommendations/**` | `AI-SERVICE` |
+
+Paths that match no route return 404. Headers such as `X-User-ID` pass through unchanged. The services stay reachable directly on their own ports, but go through the gateway when you can.
 
 ### Eureka Server
 Service registry that all other services register with. It does not register itself and does not fetch a registry.
@@ -171,7 +184,7 @@ Secrets are read from environment variables, never committed.
 |---|---|---|
 | `DB_USERNAME` | User Service | PostgreSQL username |
 | `DB_PASSWORD` | User Service | PostgreSQL password |
-| `CONFIG_SERVER_URL` | User, Activity and AI Services | Config server address, default `http://localhost:8888` |
+| `CONFIG_SERVER_URL` | Gateway, User, Activity and AI Services | Config server address, default `http://localhost:8888` |
 | `MONGODB_URI` | Activity Service, AI Service | MongoDB connection string |
 | `GEMINI_API_KEY` | AI Service | Gemini API key (required) |
 | `GEMINI_API_URL` | AI Service | Gemini endpoint, defaults to `gemini-2.5-flash` `generateContent` |
@@ -191,11 +204,12 @@ export GEMINI_API_KEY=your_gemini_key
 
 ### Running
 
-Start RabbitMQ and the config server first, then the registry, then the rest in any order. The User, Activity and AI services fail to start if the config server is not reachable. Each in its own terminal:
+Start RabbitMQ and the config server first, then the registry, then the rest in any order. The Gateway, User, Activity and AI services fail to start if the config server is not reachable. Each in its own terminal:
 
 ```bash
 cd config-server   && ./mvnw spring-boot:run
 cd eureka          && ./mvnw spring-boot:run
+cd gateway         && ./mvnw spring-boot:run
 cd userservice     && ./mvnw spring-boot:run
 cd activityservice && ./mvnw spring-boot:run
 cd aiservice       && ./mvnw spring-boot:run
@@ -220,6 +234,8 @@ curl -X POST localhost:8001/api/activities \
 curl localhost:8001/api/activities -H "X-User-ID: <id>"
 ```
 
+Every call above can also go through the gateway by replacing the service port with `8080` (for example `localhost:8080/api/users/register`).
+
 After step 2, the AI Service log should show the saved recommendation, and `GET localhost:8002/api/recommendations/user/<id>` should return it. You can also watch `activity.queue` in the RabbitMQ management UI.
 
 ## Project Structure
@@ -228,6 +244,7 @@ After step 2, the AI Service log should show the saved recommendation, and `GET 
 repwise/
 ├── config-server/     Centralised configuration
 ├── eureka/            Service registry
+├── gateway/           API gateway (single entry point)
 ├── userservice/       Users and profiles (PostgreSQL)
 ├── activityservice/   Workout tracking (MongoDB)
 ├── aiservice/         Recommendations (MongoDB, generation in progress)
@@ -244,7 +261,7 @@ Each service follows the same layered layout: `controller`, `service`, `reposito
 - [x] Centralised configuration with a config server
 - [ ] Avoid duplicate recommendations when a message is redelivered
 - [ ] Retry limits and a dead-letter queue for failed messages
-- [ ] API gateway as a single entry point
+- [x] API gateway as a single entry point
 - [ ] Authentication and authorisation
 - [ ] Centralised error handling with proper HTTP status codes
 - [ ] Containerisation with Docker Compose
