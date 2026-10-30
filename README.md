@@ -89,12 +89,14 @@ Single entry point for clients (reactive Spring Cloud Gateway Server WebFlux, ru
 Paths that match no route return 404. Headers such as `X-User-ID` pass through unchanged. If no instance of a target service is registered, the gateway returns 503. Right after a service starts there can be a short delay (about half a minute) before the gateway sees it. The services stay reachable directly on their own ports.
 
 ### User Service
-Handles registration and profile lookup, with Bean Validation on incoming requests (valid email, password of at least 6 characters). Users are stored in PostgreSQL through Spring Data JPA, with generated UUID identifiers, creation and update timestamps, and a `USER` or `ADMIN` role. It also exposes a lightweight validation endpoint used by other services.
+Handles registration and profile lookup, with Bean Validation on incoming requests (valid email, password of at least 6 characters). Passwords are hashed with BCrypt before they are stored and are never returned in responses. Users are stored in PostgreSQL through Spring Data JPA, with generated UUID identifiers, creation and update timestamps, and a `USER` or `ADMIN` role. It also exposes a lightweight validation endpoint used by other services.
 
 ### Activity Service
 Records and retrieves workouts. Before saving an activity it calls the User Service through a load-balanced `WebClient` (`http://USER-SERVICE`, resolved via Eureka) to confirm the user exists, and rejects the request if not. Activities are stored in MongoDB and support a free-form `metrics` map for type-specific data.
 
 After saving, it publishes the activity as JSON to RabbitMQ (exchange `activity.exchange`, routing key `activity.tracking`). A failure to publish is logged but does not fail the request, so the activity is still saved.
+
+Requests are validated before anything else happens: `userId`, `type`, `duration` (greater than 0), `caloriesBurned` (0 or more) and `startTime` are required.
 
 Supported activity types: `RUNNING`, `SWIMMING`, `WALKING`, `CYCLING`, `WEIGHT_LIFTING`, `PUNCHING_BAG`, `ROPE_SKIPPING`, `AEROBICS`.
 
@@ -106,6 +108,33 @@ It listens on `activity.queue` for activities published by the Activity Service,
 Known gaps:
 - A message whose processing fails (Gemini error, unparseable reply, database error) is requeued immediately and retried without limit. Retry limits and a dead-letter queue are not configured.
 - A redelivered message can produce a second recommendation for the same activity.
+
+## Error Handling
+
+Each service with a REST API has a `@RestControllerAdvice` class (`exception/GlobalExceptionHandler`) that turns exceptions into a consistent JSON body. Services throw specific exceptions; only the handler chooses status codes. Anything unexpected is logged with its stack trace and returned as a generic 500, so internal details are not exposed.
+
+```json
+{
+  "status": 404,
+  "error": "Not Found",
+  "message": "User not found: abc",
+  "path": "/api/users/abc",
+  "timestamp": "2026-10-31T09:12:00",
+  "details": []
+}
+```
+
+`details` lists per-field messages for validation errors and is empty otherwise.
+
+| Status | When |
+|---|---|
+| `400` | Validation failed, malformed JSON or unknown enum value, or a missing `X-User-ID` header |
+| `404` | User, activity or recommendation not found, or the user in an activity request does not exist |
+| `409` | Registering an email that is already taken |
+| `503` | The Activity Service cannot reach the User Service, or it responds with an error |
+| `500` | Any unhandled error |
+
+Errors raised inside the RabbitMQ listener of the AI Service are not HTTP errors and are not covered by this.
 
 ## API Reference
 
@@ -271,7 +300,9 @@ Each business service follows the same layered layout: `controller`, `service`, 
 - [ ] Retry limits and a dead-letter queue for failed messages
 - [ ] Avoid duplicate recommendations when a message is redelivered
 - [ ] Authentication and authorisation
-- [ ] Centralised error handling with proper HTTP status codes
+- [x] Centralised error handling with proper HTTP status codes
+- [x] Hash passwords with BCrypt
+- [x] Request validation for activities
 - [ ] Containerisation with Docker Compose
 - [ ] Unit and integration test coverage
 
