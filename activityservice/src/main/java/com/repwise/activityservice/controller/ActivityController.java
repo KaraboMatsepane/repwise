@@ -3,6 +3,7 @@ package com.repwise.activityservice.controller;
 import com.repwise.activityservice.dto.ActivityRequest;
 import com.repwise.activityservice.dto.ActivityResponse;
 import com.repwise.activityservice.service.ActivityService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -42,7 +43,7 @@ public class ActivityController {
      * @return {@code 200 OK} with the saved activity
      */
     @PostMapping
-    public ResponseEntity<ActivityResponse> trackActivity(@RequestBody ActivityRequest request){
+    public ResponseEntity<ActivityResponse> trackActivity(@Valid @RequestBody ActivityRequest request){
         return ResponseEntity.ok(activityService.trackActivity(request));
     }
 
