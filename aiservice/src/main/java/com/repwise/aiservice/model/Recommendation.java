@@ -12,8 +12,9 @@ import java.util.List;
  * MongoDB document holding the guidance generated for one activity, stored in the
  * {@code recommendations} collection.
  *
- * <p>Besides a free-text summary it carries lists of suggested improvements, further
- * suggestions and safety notes. The creation timestamp is maintained by Mongo auditing.
+ * <p>It carries a structured {@link Analysis} of the session plus lists of suggested
+ * improvements, further suggestions and safety notes. The creation timestamp is maintained by
+ * Mongo auditing.
  */
 @Document(collection = "recommendations")
 @Data
@@ -23,7 +24,7 @@ public class Recommendation {
     private String activityId;
     private String userId;
     private String activityType;
-    private String recommendations;
+    private Analysis analysis;
     private List<String> improvements;
     private List<String> suggestions;
     private List<String> safety;
@@ -31,4 +32,15 @@ public class Recommendation {
     @CreatedDate
     private LocalDateTime createdAt;
 
+    /**
+     * The coach's assessment of one session, split by topic. A part is empty when the model had
+     * no data to comment on, for example no heart rate.
+     *
+     * @param overall short overall assessment of the session
+     * @param pace pace analysis
+     * @param heartRate heart rate analysis
+     * @param caloriesBurned calories analysis
+     */
+    public record Analysis(String overall, String pace, String heartRate, String caloriesBurned) {
+    }
 }

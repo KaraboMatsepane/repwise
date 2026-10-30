@@ -74,7 +74,7 @@ Supported activity types: `RUNNING`, `SWIMMING`, `WALKING`, `CYCLING`, `WEIGHT_L
 ### AI Service
 Serves personalised recommendations for logged activities. The data model (improvements, suggestions and safety guidance per activity), the MongoDB repository, and endpoints to fetch recommendations by user or by activity are in place.
 
-It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. The reply is parsed into a `Recommendation`. For now the recommendation is only logged: it is not yet saved to MongoDB, so the endpoints above return nothing for new activities. A message whose processing fails is requeued by default, and retry limits and a dead-letter queue are not configured yet.
+It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. The reply is parsed into a `Recommendation` (a structured analysis of overall, pace, heart rate and calories, plus improvements, suggestions and safety lists) and saved to MongoDB, where the endpoints above can return it. A message whose processing fails is requeued by default, and retry limits and a dead-letter queue are not configured yet, and a redelivered message can produce a duplicate recommendation for the same activity.
 
 ## API Reference
 
@@ -202,7 +202,7 @@ curl -X POST localhost:8001/api/activities \
 curl localhost:8001/api/activities -H "X-User-ID: <id>"
 ```
 
-After step 2, the AI Service log should show the generated recommendation. You can also watch `activity.queue` in the RabbitMQ management UI.
+After step 2, the AI Service log should show the saved recommendation, and `GET localhost:8002/api/recommendations/user/<id>` should return it. You can also watch `activity.queue` in the RabbitMQ management UI.
 
 ## Project Structure
 
@@ -220,8 +220,9 @@ Each service follows the same layered layout: `controller`, `service`, `reposito
 ## Roadmap
 
 - [x] Event-driven flow from Activity Service to AI Service via RabbitMQ
-- [x] Generate AI recommendations with Gemini for logged activities (currently logged only)
-- [ ] Save generated recommendations to MongoDB so the AI Service endpoints return them
+- [x] Generate AI recommendations with Gemini for logged activities
+- [x] Save generated recommendations to MongoDB so the AI Service endpoints return them
+- [ ] Avoid duplicate recommendations when a message is redelivered
 - [ ] Retry limits and a dead-letter queue for failed messages
 - [ ] API gateway as a single entry point
 - [ ] Authentication and authorisation

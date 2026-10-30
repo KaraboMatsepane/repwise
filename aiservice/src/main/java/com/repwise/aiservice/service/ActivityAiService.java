@@ -8,16 +8,13 @@ import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Turns an {@link Activity} into a {@link Recommendation} by asking Gemini.
  *
  * <p>The activity is described in a prompt that asks for a fixed JSON shape
- * ({@code analysis}, {@code improvements}, {@code suggestions}, {@code safety}). The reply is
+ * ({@code analysis} with four parts, {@code improvements}, {@code suggestions}, {@code safety}). The reply is
  * parsed into a {@link Recommendation}. Saving it is the caller's job.
  */
 @Slf4j
@@ -111,7 +108,7 @@ public class ActivityAiService {
 
     /**
      * Extracts the model's text from Gemini's envelope
-     * ({@code candidates[0].content.parts[0].text}) and maps it onto a {@link Recommendation}.
+     * ({@code candidates[0].content.parts[0].text}) and binds that text, which is itself JSON, to a {@link Recommendation}.
      */
     private Recommendation parseResponse(Activity activity, String response) {
         try {
@@ -124,16 +121,16 @@ public class ActivityAiService {
                 throw new IllegalStateException("Gemini returned no text for activity " + activity.getId());
             }
 
-            JsonNode analysis = jsonMapper.readTree(text.asString());
+            GeminiReply reply = jsonMapper.readValue(text.asString(), GeminiReply.class);
 
             return Recommendation.builder()
                     .activityId(activity.getId())
                     .userId(activity.getUserId())
                     .activityType(activity.getType())
-                    .recommendations(joinAnalysis(analysis.path("analysis")))
-                    .improvements(toList(analysis.path("improvements")))
-                    .suggestions(toList(analysis.path("suggestions")))
-                    .safety(toList(analysis.path("safety")))
+                    .analysis(reply.analysis())
+                    .improvements(orEmpty(reply.improvements()))
+                    .suggestions(orEmpty(reply.suggestions()))
+                    .safety(orEmpty(reply.safety()))
                     .build();
         } catch (IllegalStateException e) {
             throw e;
@@ -143,20 +140,18 @@ public class ActivityAiService {
         }
     }
 
-    /**
-     * Joins the non-empty parts of the analysis (overall, pace, heart rate, calories) into one
-     * paragraph, one part per line, because a {@link Recommendation} stores a single string.
-     */
-    private String joinAnalysis(JsonNode analysis) {
-        return Stream.of("overall", "pace", "heartRate", "caloriesBurned")
-                .map(key -> analysis.path(key).asString(""))
-                .filter(part -> !part.isBlank())
-                .collect(Collectors.joining("\n"));
+    private List<String> orEmpty(List<String> items) {
+        return items == null ? List.of() : items;
     }
 
-    private List<String> toList(JsonNode array) {
-        List<String> items = new ArrayList<>();
-        array.forEach(item -> items.add(item.asString()));
-        return items;
+    /**
+     * The JSON object the prompt asks Gemini to produce, as found in the response's text node.
+     * Unknown fields are ignored and missing ones are null.
+     */
+    private record GeminiReply(
+            Recommendation.Analysis analysis,
+            List<String> improvements,
+            List<String> suggestions,
+            List<String> safety) {
     }
 }
