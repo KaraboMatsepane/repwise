@@ -5,6 +5,7 @@ import com.repwise.userservice.dto.UserResponse;
 import com.repwise.userservice.model.User;
 import com.repwise.userservice.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 /**
@@ -19,6 +20,7 @@ import org.springframework.stereotype.Service;
 public class UserService {
 
     private final UserRepository repository;
+    private final PasswordEncoder passwordEncoder;
 
     /**
      * Looks up a user's profile.
@@ -51,7 +53,7 @@ public class UserService {
 
         User user = new User();
         user.setEmail(request.getEmail());
-        user.setPassword(request.getPassword());
+        user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setFirstName(request.getFirstName());
         user.setLastName(request.getLastName());
 
@@ -72,7 +74,6 @@ public class UserService {
 
         userResponse.setId(user.getId());
         userResponse.setEmail(user.getEmail());
-        userResponse.setPassword(user.getPassword());
         userResponse.setFirstName(user.getFirstName());
         userResponse.setLastName(user.getLastName());
         userResponse.setCreatedAt(user.getCreatedAt());
