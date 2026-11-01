@@ -16,7 +16,7 @@ Repwise lets a user log a workout and get a personalised coaching recommendation
 
 It is built as a set of independent Spring Boot microservices. Clients talk to a single API gateway. Services find each other through a Eureka registry, load their settings from a central config server, own their own data stores, and communicate over load-balanced HTTP and asynchronous RabbitMQ messages.
 
-> **Warning: work in progress, not production-ready.** There is no authentication yet, so the `X-User-ID` header is trusted as sent and any caller can read any user's data. The Gemini integration sends workout data to a third-party API. Do not use real personal data.
+> **Warning: work in progress, not production-ready.** The gateway now requires a Keycloak-issued JWT, but the downstream services still trust the `X-User-ID` header and the `userId` in request bodies, so any authenticated caller can read any user's data. The Gemini integration sends workout data to a third-party API. Do not use real personal data.
 
 ## How it works
 
@@ -30,7 +30,9 @@ It is built as a set of independent Spring Boot microservices. Clients talk to a
 
 ```mermaid
 flowchart TD
-    client([Client]) --> gw["API Gateway :8080"]
+    client([Client]) -->|"get token"| kc["Keycloak"]
+    client -->|"Bearer JWT"| gw["API Gateway :8081"]
+    gw -.->|"public signing keys (JWKS)"| kc
 
     gw -->|"/api/users/**"| us["User Service :8000"]
     gw -->|"/api/activities/**"| as["Activity Service :8001"]
@@ -92,7 +94,7 @@ Each service is a self-contained Maven project with its own wrapper, build and d
 |---|---|---|---|---|
 | Config Server | `config-server` | 8888 | none | Working |
 | Eureka Server | `eureka` | 8761 | none | Working |
-| API Gateway | `gateway` | 8080 | none | Working |
+| API Gateway | `gateway` | 8081 | none | Working |
 | User Service | `userservice` | 8000 | PostgreSQL | Working |
 | Activity Service | `activityservice` | 8001 | MongoDB | Working |
 | AI Service | `aiservice` | 8002 | MongoDB | In progress |
@@ -106,7 +108,7 @@ Central configuration for the Gateway, User, Activity and AI services. It serves
 | File | Applies to |
 |---|---|
 | `application.properties` | every client: Eureka URL, RabbitMQ connection, and the queue, exchange and routing key names |
-| `gateway.properties` | Gateway: port and routes |
+| `gateway.properties` | Gateway: port, routes, Keycloak issuer URI |
 | `user-service.properties` | User Service: port, PostgreSQL |
 | `activity-service.properties` | Activity Service: port, MongoDB |
 | `ai-service.properties` | AI Service: port, MongoDB, Gemini |
@@ -126,6 +128,12 @@ Single entry point for clients (reactive Spring Cloud Gateway Server WebFlux, ru
 | `/api/users/**` | `USER-SERVICE` |
 | `/api/activities/**` | `ACTIVITY-SERVICE` |
 | `/api/recommendations/**` | `AI-SERVICE` |
+
+#### Authentication
+
+The gateway is an OAuth2 resource server. Users log in to Keycloak, which issues a signed JWT access token, and the client sends it as `Authorization: Bearer <token>`. The gateway (`SecurityConfig`) checks the signature, issuer and expiry on every request and returns 401 if the token is missing or invalid. It never sees passwords. It downloads Keycloak's public keys once, using the `issuer-uri` set in `gateway.properties`, and verifies tokens locally.
+
+Every route currently requires a valid token, including `/api/users/register`. Public paths are added in `pathMatchers(...).permitAll()` in `SecurityConfig`. The token is not yet used to identify the user in the downstream services.
 
 Paths that match no route return 404. Headers such as `X-User-ID` pass through unchanged. If no instance of a target service is registered, the gateway returns 503. Right after a service starts there can be a short delay (about half a minute) before the gateway sees it. The services stay reachable directly on their own ports.
 
@@ -188,7 +196,7 @@ Errors raised inside the RabbitMQ listener of the AI Service are not HTTP errors
 
 ## API Reference
 
-Every endpoint is available through the gateway at `localhost:8080` and directly on the service's own port. Errors use the [shape above](#error-handling).
+Every endpoint is available through the gateway at `localhost:8081` and directly on the service's own port. Errors use the [shape above](#error-handling).
 
 ### User Service (`:8000`)
 
@@ -243,6 +251,7 @@ POST /api/activities
 - RabbitMQ through Spring AMQP, with JSON message conversion
 - Google Gemini API for recommendation generation
 - Spring Data JPA with PostgreSQL, Spring Data MongoDB
+- Keycloak (OAuth2 / OpenID Connect) with Spring Security's OAuth2 resource server on the gateway
 - Spring Security Crypto (BCrypt), Jakarta Bean Validation, Lombok
 - Maven (wrapper included in every service)
 
@@ -260,6 +269,7 @@ POST /api/activities
   ```
   The management UI is then at http://localhost:15672 (`guest` / `guest`).
 - A Gemini API key (for the AI Service)
+- Keycloak running locally with a realm and a client that has *Direct access grants* enabled (for testing with curl). Keycloak uses its default port 8080, which is why the gateway runs on 8081.
 
 ### Configuration
 
@@ -304,25 +314,34 @@ Open the Eureka dashboard at http://localhost:8761 to confirm the services have 
 
 ### Try it
 
-All calls go through the gateway on port 8080:
+All calls go through the gateway on port 8081 and need a Keycloak access token (replace the placeholders; if your client is confidential, add `-d client_secret=<secret>`):
 
 ```bash
+# 0. Get an access token and export it
+TOKEN=$(curl -s -X POST http://localhost:<keycloak-port>/realms/<realm>/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=<client> \
+  -d username=<user> -d password=<password> | jq -r .access_token)
+
 # 1. Register a user and note the returned id
-curl -X POST localhost:8080/api/users/register \
+curl -X POST localhost:8081/api/users/register \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"email":"jane@example.com","password":"secret123","firstName":"Jane","lastName":"Doe"}'
 
 # 2. Track an activity for that user
-curl -X POST localhost:8080/api/activities \
+curl -X POST localhost:8081/api/activities \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"userId":"<id>","type":"RUNNING","duration":45,"caloriesBurned":420,"startTime":"2026-10-29T06:30:00"}'
 
 # 3. List the user's activities
-curl localhost:8080/api/activities -H "X-User-ID: <id>"
+curl localhost:8081/api/activities -H "Authorization: Bearer $TOKEN" -H "X-User-ID: <id>"
 
 # 4. Fetch the generated recommendations (give the AI Service a few seconds)
-curl localhost:8080/api/recommendations/user/<id>
+curl localhost:8081/api/recommendations/user/<id> -H "Authorization: Bearer $TOKEN"
 ```
+
+Without the `Authorization` header, or with an expired token, the gateway returns 401. Tokens are short-lived, so request a new one when that happens.
 
 After step 2 the AI Service log should show the saved recommendation. You can also watch `activity.queue` in the RabbitMQ management UI.
 
@@ -355,7 +374,9 @@ Each business service follows the same layered layout:
 ## Limitations and roadmap
 
 **Known limitations**
-- There is no authentication or authorisation. `X-User-ID` and the `userId` in a request body are client-supplied and trusted.
+- Only the gateway validates tokens. The downstream services are not protected on their own ports, and `X-User-ID` and the `userId` in a request body are client-supplied and trusted, so one authenticated user can read another's data.
+- Every gateway route requires a token, including user registration. There is no public-path allowlist beyond `/actuator/health`, and no role-based rules yet.
+- The Keycloak client uses direct access grants (the password grant) for convenience in local testing. Use the authorization code flow with PKCE before deploying.
 - A message whose processing fails (Gemini error, unparseable reply, database error) is requeued immediately and retried without limit. Retry limits and a dead-letter queue are not configured.
 - A redelivered message can produce a second recommendation for the same activity.
 - The User Service has no login endpoint yet. Users created before BCrypt was added have plaintext passwords and need to be re-registered.
@@ -371,7 +392,9 @@ Each business service follows the same layered layout:
 - [x] Request validation for activities
 - [ ] Retry limits and a dead-letter queue for failed messages
 - [ ] Avoid duplicate recommendations when a message is redelivered
-- [ ] Authentication and authorisation
+- [x] JWT validation at the gateway with Keycloak
+- [ ] Derive the user from the token in downstream services instead of trusting `X-User-ID`
+- [ ] Public registration route and role-based authorisation
 - [ ] Containerisation with Docker Compose
 - [ ] Unit and integration test coverage
 
@@ -379,6 +402,8 @@ Each business service follows the same layered layout:
 
 - **A service fails to start with `ConfigClientFailFastException`:** the config server is not running. Start it first, or set `CONFIG_SERVER_URL`.
 - **Gateway returns 503 for a service that is running:** wait about 30 seconds for the gateway to refresh its registry, and check the service appears on http://localhost:8761.
+- **Gateway returns 401:** the token is missing, expired, or was issued by a different issuer than `spring.security.oauth2.resourceserver.jwt.issuer-uri`. Compare the token's `iss` claim with that property exactly. The value must not be wrapped in quotes.
+- **Gateway fails with "port already in use":** Keycloak uses 8080 and the gateway uses 8081. Check that nothing else is on those ports.
 - **Activity request returns 503:** the Activity Service cannot reach the User Service. Check that it is registered in Eureka.
 - **No recommendation appears:** check the AI Service log for Gemini errors and confirm `GEMINI_API_KEY` is set. A failing message is retried continuously, so look for repeated errors.
 - **Activity saves but nothing reaches the queue:** RabbitMQ was down at publish time. The failure is logged by the Activity Service and the activity is not re-sent.
