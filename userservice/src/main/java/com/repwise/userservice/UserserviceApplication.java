@@ -6,8 +6,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * Entry point of the user service.
  *
- * <p>Manages user registration and profiles backed by PostgreSQL, and registers with the Eureka
- * server as {@code USER-SERVICE} so other services can reach it by name.
+ * <p>Stores user profiles in PostgreSQL. Identity (credentials, login, tokens) belongs to
+ * Keycloak: this service only verifies Keycloak access tokens and creates a user's profile the
+ * first time they call {@code GET /api/users/me}. It registers with the Eureka server as
+ * {@code USER-SERVICE} so other services can reach it by name.
  */
 @SpringBootApplication
 public class UserserviceApplication {

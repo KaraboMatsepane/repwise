@@ -41,24 +41,25 @@ public class ActivityService {
     private String routingKey;
 
     /**
-     * Validates the user, saves a new activity and publishes it to RabbitMQ.
+     * Checks that the user has a profile, saves a new activity and publishes it to RabbitMQ.
      *
      * <p>A publishing failure is logged but does not fail the request, because the activity is
      * already saved. In that case other services will not hear about the activity.
      *
-     * @param request the activity details, including the owning user's identifier
+     * @param request the activity details
+     * @param userId the owner of the activity, taken from the caller's verified token
      * @return the saved activity, including its generated identifier and audit timestamps
      * @throws InvalidUserException if the user does not exist
      * @throws UserServiceUnavailableException if the user service cannot be reached
      */
-    public ActivityResponse trackActivity(ActivityRequest request) {
+    public ActivityResponse trackActivity(ActivityRequest request, String userId) {
 
-        boolean validUser = userValidationService.validateUser(request.getUserId());
+        boolean validUser = userValidationService.validateUser(userId);
 
-        if (!validUser) throw new InvalidUserException(request.getUserId());
+        if (!validUser) throw new InvalidUserException(userId);
 
         Activity activity = Activity.builder()
-                .userId(request.getUserId())
+                .userId(userId)
                 .type(request.getType())
                 .duration(request.getDuration())
                 .caloriesBurned(request.getCaloriesBurned())
@@ -114,15 +115,20 @@ public class ActivityService {
     }
 
     /**
-     * Retrieves a single activity.
+     * Retrieves a single activity, only if it belongs to the given user.
      *
      * @param activityId the identifier of the activity
+     * @param userId the caller's identifier, taken from the verified token
      * @return the activity
-     * @throws ActivityNotFoundException if no activity exists with the given identifier
+     * @throws ActivityNotFoundException if no activity exists with the given identifier or it
+     *         belongs to a different user
      */
-    public ActivityResponse getActivityById(String activityId) {
+    public ActivityResponse getActivityById(String activityId, String userId) {
+
         return repository.findById(activityId)
                 .map(this::mapToResponse)
+                .filter(r -> r.getUserId().equals(userId))
                 .orElseThrow(() -> new ActivityNotFoundException(activityId));
+
     }
 }

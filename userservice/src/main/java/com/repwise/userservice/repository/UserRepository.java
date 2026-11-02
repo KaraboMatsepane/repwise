@@ -10,12 +10,4 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * string identifier.
  */
 public interface UserRepository extends JpaRepository<User, String> {
-
-    /**
-     * Checks whether a user is already registered with the given email address.
-     *
-     * @param email the email address to look for
-     * @return {@code true} if a user with that email exists
-     */
-    boolean existsByEmail(String email);
 }

@@ -1,17 +1,16 @@
 package com.repwise.userservice.service;
 
-import com.repwise.userservice.dto.RegisterRequest;
 import com.repwise.userservice.dto.UserResponse;
-import com.repwise.userservice.exception.EmailAlreadyExistsException;
 import com.repwise.userservice.exception.UserNotFoundException;
 import com.repwise.userservice.model.User;
 import com.repwise.userservice.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 
 /**
- * Business logic for user registration and lookup.
+ * Business logic for user profiles: lookup, existence checks and creating a profile from a
+ * verified Keycloak token.
  *
  * <p>Persistence is delegated to {@link UserRepository}, and entities are converted to
  * {@link UserResponse} objects before they leave this class so the web layer never handles
@@ -22,7 +21,6 @@ import org.springframework.stereotype.Service;
 public class UserService {
 
     private final UserRepository repository;
-    private final PasswordEncoder passwordEncoder;
 
     /**
      * Looks up a user's profile.
@@ -36,33 +34,6 @@ public class UserService {
                 .orElseThrow(() -> new UserNotFoundException(userId));
 
         return createUserResponse(user);
-    }
-
-    /**
-     * Registers a new user.
-     *
-     * <p>The request is assumed to have been validated by the web layer.
-     *
-     * @param request the registration details
-     * @return the persisted user, including generated identifier and timestamps
-     * @throws EmailAlreadyExistsException if a user with the same email already exists
-     */
-    public UserResponse register(RegisterRequest request) {
-
-        if (repository.existsByEmail(request.getEmail())){
-            throw new EmailAlreadyExistsException(request.getEmail());
-        }
-
-        User user = new User();
-        user.setEmail(request.getEmail());
-        user.setPassword(passwordEncoder.encode(request.getPassword()));
-        user.setFirstName(request.getFirstName());
-        user.setLastName(request.getLastName());
-
-        User savedUser = repository.save(user);
-
-        return createUserResponse(savedUser);
-
     }
 
     /**
@@ -85,12 +56,49 @@ public class UserService {
     }
 
     /**
-     * Checks whether a user exists.
+     * Checks whether a user has a profile.
      *
-     * @param userId the identifier of the user
-     * @return {@code true} if a user with the given identifier exists
+     * @param userId the identifier of the user (the Keycloak {@code sub})
+     * @return {@code true} if a profile with the given identifier exists
      */
     public boolean existsById(String userId) {
         return repository.existsById(userId);
+    }
+
+    /**
+     * Returns the caller's profile, creating it if this is their first request.
+     *
+     * <p>The profile id is the token's {@code sub} claim, so a user can only ever reach their own
+     * row. Two simultaneous first requests for the same user could both try to insert; the loser
+     * fails on the primary key.
+     *
+     * @param jwt the verified access token of the caller
+     * @return the caller's profile
+     */
+    public UserResponse getOrCreateFromToken(Jwt jwt) {
+        User user = repository.findById(jwt.getSubject())
+                .orElseGet(() -> createProfileFrom(jwt));
+
+        return createUserResponse(user);
+
+    }
+
+    /**
+     * Builds and saves a new profile from the claims of a verified token.
+     *
+     * <p>The token must contain an {@code email} claim, because the column is not nullable.
+     *
+     * @param jwt the verified access token
+     * @return the saved profile
+     */
+    private User createProfileFrom(Jwt jwt) {
+        User user = new User();
+
+        user.setId(jwt.getSubject());
+        user.setEmail(jwt.getClaimAsString("email"));
+        user.setFirstName(jwt.getClaimAsString("given_name"));
+        user.setLastName(jwt.getClaimAsString("family_name"));
+
+        return repository.save(user);
     }
 }

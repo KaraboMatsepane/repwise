@@ -13,6 +13,9 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
  * <p>The request goes to {@code GET /api/users/{userId}/validate} through a load-balanced
  * {@link WebClient}, so the target instance is resolved through Eureka. The call is blocking
  * because the surrounding service layer is synchronous.
+ *
+ * <p>The call carries no access token, so it only works while {@code /validate} is open in the
+ * user service.
  */
 @Service
 @RequiredArgsConstructor

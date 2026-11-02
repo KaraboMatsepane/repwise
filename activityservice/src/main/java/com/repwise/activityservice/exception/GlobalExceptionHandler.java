@@ -7,7 +7,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -47,13 +46,6 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleUnreadable(
             HttpMessageNotReadableException ex, HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST, "Malformed or unreadable request body", request, List.of());
-    }
-
-    @ExceptionHandler(MissingRequestHeaderException.class)
-    public ResponseEntity<ErrorResponse> handleMissingHeader(
-            MissingRequestHeaderException ex, HttpServletRequest request) {
-        return build(HttpStatus.BAD_REQUEST, "Missing required header: " + ex.getHeaderName(),
-                request, List.of());
     }
 
     /** Raised by {@code @Valid} when a request body breaks a Bean Validation rule. */

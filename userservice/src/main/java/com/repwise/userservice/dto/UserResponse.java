@@ -4,7 +4,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * Response body describing a user, returned by the registration and profile endpoints.
+ * Response body describing a user, returned by the profile endpoints.
  *
  * <p>This is a flat copy of the persisted {@link com.repwise.userservice.model.User} fields so
  * that the API contract is independent of the database entity.
