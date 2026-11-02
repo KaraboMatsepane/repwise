@@ -23,7 +23,7 @@ public class RecommendationService {
     /**
      * Retrieves every recommendation generated for a user.
      *
-     * @param userId the identifier of the user
+     * @param userId the identifier of the user (the Keycloak {@code sub})
      * @return the user's recommendations, empty if there are none
      */
     public List<Recommendation> getUserRecommendations(String userId) {
@@ -31,15 +31,18 @@ public class RecommendationService {
     }
 
     /**
-     * Retrieves the recommendation generated for a single activity.
+     * Retrieves the recommendation generated for a single activity, only if it belongs to the
+     * given user.
      *
      * @param activityId the identifier of the activity
+     * @param userId the caller's identifier, taken from the verified token
      * @return the recommendation
-     * @throws RecommendationNotFoundException if no recommendation exists for the activity
+     * @throws RecommendationNotFoundException if no recommendation exists for the activity or it
+     *         belongs to a different user
      */
-    public Recommendation getActivityRecommendation(String activityId) {
-        return repository.findByActivityId(activityId).orElseThrow(
-                () -> new RecommendationNotFoundException(activityId)
-        );
+    public Recommendation getActivityRecommendation(String activityId, String userId) {
+        return repository.findByActivityId(activityId)
+                .filter(recommendation -> recommendation.getUserId().equals(userId))
+                .orElseThrow(() -> new RecommendationNotFoundException(activityId));
     }
 }
