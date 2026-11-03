@@ -48,7 +48,7 @@ public class ActivityController {
      */
     @PostMapping
     public ResponseEntity<ActivityResponse> trackActivity(@Valid @RequestBody ActivityRequest request, @AuthenticationPrincipal Jwt jwt){
-        return ResponseEntity.ok(activityService.trackActivity(request, jwt.getSubject()));
+        return ResponseEntity.ok(activityService.trackActivity(request, jwt));
     }
 
     /**

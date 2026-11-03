@@ -16,13 +16,13 @@ Repwise lets a user log a workout and get a personalised coaching recommendation
 
 It is built as a set of independent Spring Boot microservices. Clients talk to a single API gateway. Services find each other through a Eureka registry, load their settings from a central config server, own their own data stores, and communicate over load-balanced HTTP and asynchronous RabbitMQ messages.
 
-> **Warning: work in progress, not production-ready.** The gateway and the User, Activity and AI services require a Keycloak-issued JWT, and the Activity and AI services take the user from the token. `GET /api/users/{id}/validate` is open, and `GET /api/users/{id}` returns any user's profile to any authenticated caller. The Gemini integration sends workout data to a third-party API. Do not use real personal data.
+> **Warning: work in progress, not production-ready.** The gateway and the User, Activity and AI services require a Keycloak-issued JWT, and the Activity and AI services take the user from the token. Every endpoint needs a token, but `GET /api/users/{id}` and `/validate` accept any user id from any authenticated caller, so one user can read another's profile. The Gemini integration sends workout data to a third-party API. Do not use real personal data.
 
 ## How it works
 
 1. **Sign up and log in with Keycloak.** Keycloak stores the credentials and issues a signed access token. The platform never stores passwords.
 2. **Create a profile.** The first call to `GET /api/users/me` creates the user's profile in the User Service from the token's claims. Later calls return it.
-3. **Track an activity.** The Activity Service validates the request, takes the user from the token (not from the request), checks with the User Service that the user has a profile, saves the activity to MongoDB, and returns immediately.
+3. **Track an activity.** The Activity Service validates the request, takes the user from the token (not from the request), checks with the User Service (forwarding the caller's token) that the user has a profile, saves the activity to MongoDB, and returns immediately.
 4. **Publish.** The saved activity is published to RabbitMQ as JSON. If publishing fails the failure is logged and the activity is still saved.
 5. **Recommend.** The AI Service consumes the message, builds a prompt from the activity, and asks Gemini for a structured JSON reply.
 6. **Store and serve.** The reply is parsed into a `Recommendation` (analysis, improvements, suggestions, safety notes), saved to MongoDB, and served to its owner.
@@ -43,7 +43,7 @@ flowchart TD
     gw -->|"/api/activities/**"| as["Activity Service :8001"]
     gw -->|"/api/recommendations/**"| ai["AI Service :8002"]
 
-    as -->|"validate user (lb://USER-SERVICE)"| us
+    as -->|"validate user, token forwarded (lb://USER-SERVICE)"| us
 
     us --- pg[("PostgreSQL")]
     as --- m1[("MongoDB: activities")]
@@ -88,7 +88,8 @@ sequenceDiagram
     G->>G: verify token
     G->>A: route (lb://ACTIVITY-SERVICE)
     A->>A: verify token, owner = token subject
-    A->>U: GET /api/users/{sub}/validate (no token, endpoint is open)
+    A->>U: GET /api/users/{sub}/validate (caller's token forwarded)
+    U->>U: verify token
     U-->>A: true
     A->>A: save to MongoDB
     A-)Q: publish activity
@@ -157,7 +158,7 @@ Paths that match no route return 404. Headers, including `Authorization`, pass t
 ### User Service
 Stores user profiles. Identity (sign-up, credentials, login, tokens) belongs to Keycloak, so this service has no registration endpoint and stores no passwords. It is an OAuth2 resource server: every endpoint needs a valid access token except the validation endpoint.
 
-A profile's id is the user's Keycloak id (the token's `sub` claim). `GET /api/users/me` returns the caller's profile and creates it from the token's `email`, `given_name` and `family_name` claims on first use, so the Keycloak user needs an email. Profiles are stored in PostgreSQL through Spring Data JPA with creation and update timestamps and a `USER` or `ADMIN` role. `GET /api/users/{id}/validate` is a lightweight, currently unauthenticated, existence check used by the Activity Service.
+A profile's id is the user's Keycloak id (the token's `sub` claim). `GET /api/users/me` returns the caller's profile and creates it from the token's `email`, `given_name` and `family_name` claims on first use, so the Keycloak user needs an email. Profiles are stored in PostgreSQL through Spring Data JPA with creation and update timestamps and a `USER` or `ADMIN` role. `GET /api/users/{id}/validate` is a lightweight existence check used by the Activity Service, which forwards the caller's token.
 
 ### Activity Service
 Records and retrieves workouts. It is an OAuth2 resource server: every endpoint needs a valid access token, and the token's `sub` claim is the owner of each activity. The request body carries no user id, users only see their own activities, and another user's activity id returns 404. Before saving an activity it calls the User Service through a load-balanced `WebClient` (`http://USER-SERVICE`, resolved via Eureka) to confirm the user has a profile, and rejects the request if not. Activities are stored in MongoDB and support a free-form `metrics` map for type-specific data.
@@ -224,9 +225,9 @@ Every endpoint is available through the gateway at `localhost:8081` and directly
 |---|---|---|
 | `GET` | `/api/users/me` | Get the caller's profile, creating it on first use |
 | `GET` | `/api/users/{userId}` | Get a user profile |
-| `GET` | `/api/users/{userId}/validate` | Returns `true` if the user has a profile (no token needed) |
+| `GET` | `/api/users/{userId}/validate` | Returns `true` if the user has a profile |
 
-All except `validate` need `Authorization: Bearer <token>`. Users sign up and log in through Keycloak, and there is no request body to send.
+All need `Authorization: Bearer <token>`. Users sign up and log in through Keycloak, and there is no request body to send.
 
 ### Activity Service (`:8001`)
 
@@ -386,7 +387,9 @@ Each business service follows the same layered layout:
 ## Limitations and roadmap
 
 **Known limitations**
-- `GET /api/users/{id}/validate` is open because the Activity Service calls it without a token, so it reveals whether a user id exists. `GET /api/users/{id}` returns any user's profile to any authenticated caller.
+- `GET /api/users/{id}` returns any user's profile, and `/validate` confirms whether any user id exists, to any authenticated caller. Neither is limited to the caller's own id yet.
+- The Activity Service forwards the caller's own access token to the User Service. Tokens are not restricted to a particular audience, so any service that receives one could replay it elsewhere. Add an audience check or use token exchange before production.
+- If the forwarded token is rejected by the User Service (for example it expires between the two calls), the Activity Service reports a 503 "user service unavailable", not a 401.
 - The Activity Service rejects activities until the user has called `GET /api/users/me` once, because the profile does not exist before that.
 - The Keycloak issuer URI is hard-coded to `localhost:8080` in the config files, and there are no role-based rules yet.
 - The Keycloak client uses direct access grants (the password grant) for convenience in local testing. Use the authorization code flow with PKCE before deploying.
@@ -408,7 +411,7 @@ Each business service follows the same layered layout:
 - [x] JWT validation at the gateway with Keycloak
 - [x] Activity Service takes the user from the token and enforces ownership
 - [x] AI Service verifies tokens and serves recommendations by the token's subject
-- [ ] Forward the user's token to the User Service and close `/validate`
+- [x] Forward the user's token to the User Service and close `/validate`
 - [ ] Role-based authorisation with Keycloak roles
 - [ ] Authorization code flow with PKCE instead of the password grant
 - [ ] Containerisation with Docker Compose
@@ -418,7 +421,7 @@ Each business service follows the same layered layout:
 
 - **A service fails to start with `ConfigClientFailFastException`:** the config server is not running. Start it first, or set `CONFIG_SERVER_URL`.
 - **Gateway returns 503 for a service that is running:** wait about 30 seconds for the gateway to refresh its registry, and check the service appears on http://localhost:8761.
-- **Gateway or service returns 401:** the token is missing, expired (they last about 5 minutes), or was issued by a different issuer than `spring.security.oauth2.resourceserver.jwt.issuer-uri`. Compare the token's `iss` claim with that property exactly, and check the property name is spelled `issuer-uri`, the port is Keycloak's (8080) and the value has no quotes. A broken `Authorization` header, such as `Bearer ` followed by an empty shell variable, is rejected even on open paths.
+- **Gateway or service returns 401:** the token is missing, expired (they last about 5 minutes), or was issued by a different issuer than `spring.security.oauth2.resourceserver.jwt.issuer-uri`. Compare the token's `iss` claim with that property exactly, and check the property name is spelled `issuer-uri`, the port is Keycloak's (8080) and the value has no quotes. A broken `Authorization` header, such as `Bearer ` followed by an empty shell variable, is rejected before the request is processed.
 - **A service fails with "required a bean of type JwtDecoder":** the `issuer-uri` property is not reaching it. Check the spelling and restart the config server, which serves the files from its own resources.
 - **Tracking an activity returns 404 "User not found":** call `GET /api/users/me` once first so your profile exists.
 - **`/api/users/me` returns 500:** the Keycloak user has no email, which the profile requires.

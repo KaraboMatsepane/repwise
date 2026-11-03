@@ -14,8 +14,9 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
  * {@link WebClient}, so the target instance is resolved through Eureka. The call is blocking
  * because the surrounding service layer is synchronous.
  *
- * <p>The call carries no access token, so it only works while {@code /validate} is open in the
- * user service.
+ * <p>The call forwards the caller's own access token as a Bearer header, because the user service
+ * requires a valid token on every endpoint. If the token is rejected, the user service answers
+ * {@code 401} and this class reports it as the user service being unavailable.
  */
 @Service
 @RequiredArgsConstructor
@@ -27,15 +28,17 @@ public class UserValidationService {
      * Checks whether a user exists.
      *
      * @param userId the identifier of the user
+     * @param accessToken the caller's raw access token, forwarded to the user service
      * @return {@code true} if the user service confirms the user exists
      * @throws UserServiceUnavailableException if the user service responds with an error status
-     *         or cannot be reached
+     *         (including {@code 401}) or cannot be reached
      */
-    public boolean validateUser(String userId) {
+    public boolean validateUser(String userId, String accessToken) {
         try {
             return Boolean.TRUE.equals(
                     userServiceWebClient.get()
                             .uri("/api/users/{userId}/validate", userId)
+                            .headers(headers -> headers.setBearerAuth(accessToken))
                             .retrieve()
                             .bodyToMono(Boolean.class)
                             .block()

@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -47,14 +48,16 @@ public class ActivityService {
      * already saved. In that case other services will not hear about the activity.
      *
      * @param request the activity details
-     * @param userId the owner of the activity, taken from the caller's verified token
+     * @param jwt the caller's verified access token; its subject owns the activity and the token
+     *        itself is forwarded to the user service for the profile check
      * @return the saved activity, including its generated identifier and audit timestamps
      * @throws InvalidUserException if the user does not exist
      * @throws UserServiceUnavailableException if the user service cannot be reached
      */
-    public ActivityResponse trackActivity(ActivityRequest request, String userId) {
+    public ActivityResponse trackActivity(ActivityRequest request, Jwt jwt) {
 
-        boolean validUser = userValidationService.validateUser(userId);
+        String userId = jwt.getSubject();
+        boolean validUser = userValidationService.validateUser(userId, jwt.getTokenValue());
 
         if (!validUser) throw new InvalidUserException(userId);
 

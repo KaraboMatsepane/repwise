@@ -16,9 +16,8 @@ import org.springframework.security.web.SecurityFilterChain;
  * {@code spring.security.oauth2.resourceserver.jwt.issuer-uri}; failures get a {@code 401}.
  * The service is stateless (no sessions) and CSRF protection is off because no cookies are used.
  *
- * <p>The only open path is {@code GET /api/users/{id}/validate}, which the activity service
- * calls without a token. This is temporary and should be closed once the caller forwards the
- * user's token.
+ * <p>There are no open paths. The activity service calls {@code /api/users/{id}/validate} with
+ * the caller's own token forwarded.
  */
 @Configuration
 public class SecurityConfig {
@@ -29,9 +28,7 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/users/*/validate").permitAll()
-                        .anyRequest().authenticated())
+                .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
                 .build();
     }

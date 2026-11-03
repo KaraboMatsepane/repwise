@@ -14,12 +14,13 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * REST controller exposing user operations under {@code /api/users}.
  *
- * <p>Endpoints (all require a valid access token except {@code validate}):
+ * <p>Endpoints (all require a valid access token):
  * <ul>
  *   <li>{@code GET /api/users/me} returns the caller's own profile, creating it on first use.</li>
  *   <li>{@code GET /api/users/{userId}} returns a user's profile.</li>
- *   <li>{@code GET /api/users/{userId}/validate} reports whether a user has a profile. It is
- *       open (no token) because the activity service calls it before it records an activity.</li>
+ *   <li>{@code GET /api/users/{userId}/validate} reports whether a user has a profile. The
+ *       activity service calls it, with the caller's token forwarded, before it records an
+ *       activity.</li>
  * </ul>
  *
  * <p>There is no registration endpoint: users sign up and log in through Keycloak.
