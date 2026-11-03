@@ -9,6 +9,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Turns an {@link Activity} into a {@link Recommendation} by asking Gemini.
@@ -16,11 +18,18 @@ import java.util.List;
  * <p>The activity is described in a prompt that asks for a fixed JSON shape
  * ({@code analysis} with four parts, {@code improvements}, {@code suggestions}, {@code safety}). The reply is
  * parsed into a {@link Recommendation}. Saving it is the caller's job.
+ *
+ * <p>Models sometimes wrap their JSON in a Markdown code fence (for example {@code ```json}) or add
+ * a sentence around it despite being told not to. A reply that is not valid JSON on its own is
+ * therefore retried with the contents of its first code fence; valid JSON is never altered.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ActivityAiService {
+
+    /** A Markdown code fence: an optional language tag, then the content up to the closing fence. */
+    private static final Pattern CODE_FENCE = Pattern.compile("```[A-Za-z]*\\s*(.*?)\\s*```", Pattern.DOTALL);
 
     private final GeminiService geminiService;
     private final JsonMapper jsonMapper;
@@ -109,6 +118,7 @@ public class ActivityAiService {
     /**
      * Extracts the model's text from Gemini's envelope
      * ({@code candidates[0].content.parts[0].text}) and binds that text, which is itself JSON, to a {@link Recommendation}.
+     * The text may be wrapped in a Markdown code fence, see {@link #readReply(String)}.
      */
     private Recommendation parseResponse(Activity activity, String response) {
         try {
@@ -121,7 +131,7 @@ public class ActivityAiService {
                 throw new IllegalStateException("Gemini returned no text for activity " + activity.getId());
             }
 
-            GeminiReply reply = jsonMapper.readValue(text.asString(), GeminiReply.class);
+            GeminiReply reply = readReply(text.asString());
 
             return Recommendation.builder()
                     .activityId(activity.getId())
@@ -137,6 +147,29 @@ public class ActivityAiService {
         } catch (Exception e) {
             throw new IllegalStateException(
                     "Could not parse Gemini response for activity " + activity.getId(), e);
+        }
+    }
+
+    /**
+     * Binds the model's text to a {@link GeminiReply}.
+     *
+     * <p>The text is parsed as it is first, so valid JSON is never changed. Only if that fails, and
+     * the text contains a Markdown code fence, is the content of the first fence parsed instead.
+     *
+     * @param modelText the text the model produced
+     * @return the parsed reply
+     * @throws RuntimeException if neither the text nor the content of its first code fence is the
+     *         expected JSON
+     */
+    private GeminiReply readReply(String modelText) {
+        try {
+            return jsonMapper.readValue(modelText, GeminiReply.class);
+        } catch (RuntimeException notPlainJson) {
+            Matcher fenced = CODE_FENCE.matcher(modelText);
+            if (!fenced.find()) {
+                throw notPlainJson;
+            }
+            return jsonMapper.readValue(fenced.group(1), GeminiReply.class);
         }
     }
 

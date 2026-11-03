@@ -183,7 +183,7 @@ It listens on `activity.queue` for activities published by the Activity Service,
 - **Centralised configuration.** One config server, one shared file for the RabbitMQ names, secrets read from the environment and never committed.
 - **Reactive gateway.** Spring Cloud Gateway on WebFlux, so routing does not block threads.
 - **Database per service.** PostgreSQL for users, MongoDB for activities and recommendations. No service reads another's database.
-- **Session-specific AI output.** The prompt requires every point to be grounded in the logged numbers and the activity type. Gemini is asked for JSON only, and the reply is parsed into a typed `Recommendation`.
+- **Session-specific AI output.** The prompt requires every point to be grounded in the logged numbers and the activity type. Gemini is asked for JSON only, and the reply is parsed into a typed `Recommendation`. If the model wraps its JSON in a Markdown code fence (for example ```` ```json ````) or adds a sentence around it, the fenced block is unwrapped; valid JSON is never altered.
 - **Delegated identity.** Keycloak handles sign-up, login and tokens. The gateway and the User, Activity and AI services verify the JWT's signature, issuer and expiry locally, and the platform stores no passwords.
 - **Token-derived ownership.** The Activity and AI services take the user from the token, so a client cannot log or read activities and recommendations as someone else.
 - **Input validation.** Bean Validation on activity requests. Invalid input returns a 400 listing every failed field.
@@ -395,7 +395,7 @@ Each business service follows the same layered layout:
 - The Activity Service rejects activities until the user has called `GET /api/users/me` once, because the profile does not exist before that.
 - The Keycloak issuer URI is hard-coded to `localhost:8080` in the config files, and there are no role-based rules yet.
 - The Keycloak client uses direct access grants (the password grant) for convenience in local testing. Use the authorization code flow with PKCE before deploying.
-- A message whose processing fails (Gemini error, unparseable reply, database error) is requeued immediately and retried without limit. Retry limits and a dead-letter queue are not configured.
+- A message whose processing fails (Gemini error, a reply that is not the expected JSON even after unwrapping a code fence, database error) is requeued immediately and retried without limit. Retry limits and a dead-letter queue are not configured.
 - A redelivered message can produce a second recommendation for the same activity.
 - The `users` table is managed by `ddl-auto=update`, which never drops old columns. After the move to Keycloak the old `password` column and `NOT NULL` constraint must be dropped by hand on an existing database.
 - Test coverage is limited to the default context-load tests, which need the config server running.
