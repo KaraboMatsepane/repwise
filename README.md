@@ -16,7 +16,7 @@ Repwise lets a user log a workout and get a personalised coaching recommendation
 
 It is built as a set of independent Spring Boot microservices. Clients talk to a single API gateway. Services find each other through a Eureka registry, load their settings from a central config server, own their own data stores, and communicate over load-balanced HTTP and asynchronous RabbitMQ messages.
 
-> **Warning: work in progress, not production-ready.** The gateway and the User, Activity and AI services require a Keycloak-issued JWT, and the Activity and AI services take the user from the token. Every endpoint needs a token, and users can only read their own data. There are no admin features or roles yet. The Gemini integration sends workout data to a third-party API. Do not use real personal data.
+> **Warning: work in progress, not production-ready.** The gateway and the User, Activity and AI services require a Keycloak-issued JWT, and the Activity and AI services take the user from the token. Every endpoint needs a token, and users can only read their own data, except admins, who can read any user's profile. The Gemini integration sends workout data to a third-party API. Do not use real personal data.
 
 ## How it works
 
@@ -158,7 +158,7 @@ Paths that match no route return 404. Headers, including `Authorization`, pass t
 ### User Service
 Stores user profiles. Identity (sign-up, credentials, login, tokens) belongs to Keycloak, so this service has no registration endpoint and stores no passwords. It is an OAuth2 resource server: every endpoint needs a valid access token except the validation endpoint.
 
-It reads Keycloak realm roles from the token's `realm_access.roles` claim and exposes them as `ROLE_*` authorities (the role `admin` becomes `ROLE_ADMIN`), ready for `hasRole` rules; no endpoint uses a role yet.
+It reads Keycloak realm roles from the token's `realm_access.roles` claim and exposes them as `ROLE_*` authorities (the role `admin` becomes `ROLE_ADMIN`), ready for `hasRole` rules; `GET /api/users/{id}` lets users with `ROLE_ADMIN` read any profile.
 
 A profile's id is the user's Keycloak id (the token's `sub` claim). `GET /api/users/me` returns the caller's profile and creates it from the token's `email`, `given_name` and `family_name` claims on first use, so the Keycloak user needs an email. Profiles are stored in PostgreSQL through Spring Data JPA with creation and update timestamps and a `USER` or `ADMIN` role. `GET /api/users/{id}/validate` is a lightweight existence check used by the Activity Service, which forwards the caller's token.
 
@@ -226,7 +226,7 @@ Every endpoint is available through the gateway at `localhost:8081` and directly
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/users/me` | Get the caller's profile, creating it on first use |
-| `GET` | `/api/users/{userId}` | Get your own profile by id (any other id returns 404) |
+| `GET` | `/api/users/{userId}` | Get your own profile by id; admins can get any profile; other callers get 404 for any other id |
 | `GET` | `/api/users/{userId}/validate` | Returns `true` if the id is yours and has a profile, otherwise `false` |
 
 All need `Authorization: Bearer <token>`. Users sign up and log in through Keycloak, and there is no request body to send.
@@ -389,7 +389,7 @@ Each business service follows the same layered layout:
 ## Limitations and roadmap
 
 **Known limitations**
-- Roles are read from the token in the User Service, but no rule uses them yet, so nobody (not even an administrator) can read another user's profile through the API. The Activity and AI services do not read roles.
+- Only `GET /api/users/{id}` uses roles (admins can read any profile). The Activity and AI services do not read roles, so there is no admin access to other users' activities or recommendations, and `/validate` is own-id only even for admins.
 - The Activity Service forwards the caller's own access token to the User Service. Tokens are not restricted to a particular audience, so any service that receives one could replay it elsewhere. Add an audience check or use token exchange before production.
 - If the forwarded token is rejected by the User Service (for example it expires between the two calls), the Activity Service reports a 503 "user service unavailable", not a 401.
 - The Activity Service rejects activities until the user has called `GET /api/users/me` once, because the profile does not exist before that.
@@ -416,7 +416,8 @@ Each business service follows the same layered layout:
 - [x] Forward the user's token to the User Service and close `/validate`
 - [x] Users can only read their own profile
 - [x] User Service reads Keycloak realm roles from the token as `ROLE_*` authorities
-- [ ] Use roles in rules (for example an admin who can read any profile)
+- [x] Admins can read any user's profile
+- [ ] Use roles in the Activity and AI services, and add admin-only endpoints (for example listing users)
 - [ ] Authorization code flow with PKCE instead of the password grant
 - [ ] Containerisation with Docker Compose
 - [ ] Unit and integration test coverage

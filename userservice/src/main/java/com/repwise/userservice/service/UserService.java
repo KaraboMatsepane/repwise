@@ -25,17 +25,19 @@ public class UserService {
     /**
      * Looks up a user's profile.
      *
-     * <p>A user may only read their own profile. Asking for anyone else's is reported exactly like
-     * a missing user, so the existence of other accounts is not revealed.
+     * <p>A user may only read their own profile, but an administrator may read any. For a caller
+     * who is neither, asking for someone else's profile is reported exactly like a missing user,
+     * so the existence of other accounts is not revealed.
      *
      * @param userId the identifier of the profile being requested
      * @param callerId the identifier of the caller, taken from their verified token
+     * @param callerIsAdmin whether the caller holds the {@code ROLE_ADMIN} authority
      * @return the user's profile
      * @throws UserNotFoundException if no user exists with the given identifier, or it is not the
-     *         caller's own
+     *         caller's own and the caller is not an administrator
      */
-    public UserResponse getProfile(String userId, String callerId) {
-        if (!userId.equals(callerId)) {
+    public UserResponse getProfile(String userId, String callerId, boolean callerIsAdmin) {
+        if (!callerIsAdmin && !userId.equals(callerId)){
             throw new UserNotFoundException(userId);
         }
 
