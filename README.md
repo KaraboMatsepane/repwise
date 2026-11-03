@@ -16,7 +16,7 @@ Repwise lets a user log a workout and get a personalised coaching recommendation
 
 It is built as a set of independent Spring Boot microservices. Clients talk to a single API gateway. Services find each other through a Eureka registry, load their settings from a central config server, own their own data stores, and communicate over load-balanced HTTP and asynchronous RabbitMQ messages.
 
-> **Warning: work in progress, not production-ready.** The gateway and the User, Activity and AI services require a Keycloak-issued JWT, and the Activity and AI services take the user from the token. Every endpoint needs a token, but `GET /api/users/{id}` and `/validate` accept any user id from any authenticated caller, so one user can read another's profile. The Gemini integration sends workout data to a third-party API. Do not use real personal data.
+> **Warning: work in progress, not production-ready.** The gateway and the User, Activity and AI services require a Keycloak-issued JWT, and the Activity and AI services take the user from the token. Every endpoint needs a token, and users can only read their own data. There are no admin features or roles yet. The Gemini integration sends workout data to a third-party API. Do not use real personal data.
 
 ## How it works
 
@@ -224,8 +224,8 @@ Every endpoint is available through the gateway at `localhost:8081` and directly
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/users/me` | Get the caller's profile, creating it on first use |
-| `GET` | `/api/users/{userId}` | Get a user profile |
-| `GET` | `/api/users/{userId}/validate` | Returns `true` if the user has a profile |
+| `GET` | `/api/users/{userId}` | Get your own profile by id (any other id returns 404) |
+| `GET` | `/api/users/{userId}/validate` | Returns `true` if the id is yours and has a profile, otherwise `false` |
 
 All need `Authorization: Bearer <token>`. Users sign up and log in through Keycloak, and there is no request body to send.
 
@@ -387,7 +387,7 @@ Each business service follows the same layered layout:
 ## Limitations and roadmap
 
 **Known limitations**
-- `GET /api/users/{id}` returns any user's profile, and `/validate` confirms whether any user id exists, to any authenticated caller. Neither is limited to the caller's own id yet.
+- There are no roles, so nobody (not even an administrator) can read another user's profile through the API.
 - The Activity Service forwards the caller's own access token to the User Service. Tokens are not restricted to a particular audience, so any service that receives one could replay it elsewhere. Add an audience check or use token exchange before production.
 - If the forwarded token is rejected by the User Service (for example it expires between the two calls), the Activity Service reports a 503 "user service unavailable", not a 401.
 - The Activity Service rejects activities until the user has called `GET /api/users/me` once, because the profile does not exist before that.
@@ -412,7 +412,8 @@ Each business service follows the same layered layout:
 - [x] Activity Service takes the user from the token and enforces ownership
 - [x] AI Service verifies tokens and serves recommendations by the token's subject
 - [x] Forward the user's token to the User Service and close `/validate`
-- [ ] Role-based authorisation with Keycloak roles
+- [x] Users can only read their own profile
+- [ ] Role-based authorisation with Keycloak roles (for example an admin who can read any profile)
 - [ ] Authorization code flow with PKCE instead of the password grant
 - [ ] Containerisation with Docker Compose
 - [ ] Unit and integration test coverage

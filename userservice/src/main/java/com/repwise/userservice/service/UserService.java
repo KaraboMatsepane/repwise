@@ -25,11 +25,20 @@ public class UserService {
     /**
      * Looks up a user's profile.
      *
-     * @param userId the identifier of the user
+     * <p>A user may only read their own profile. Asking for anyone else's is reported exactly like
+     * a missing user, so the existence of other accounts is not revealed.
+     *
+     * @param userId the identifier of the profile being requested
+     * @param callerId the identifier of the caller, taken from their verified token
      * @return the user's profile
-     * @throws UserNotFoundException if no user exists with the given identifier
+     * @throws UserNotFoundException if no user exists with the given identifier, or it is not the
+     *         caller's own
      */
-    public UserResponse getProfile(String userId) {
+    public UserResponse getProfile(String userId, String callerId) {
+        if (!userId.equals(callerId)) {
+            throw new UserNotFoundException(userId);
+        }
+
         User user = repository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException(userId));
 
@@ -56,13 +65,17 @@ public class UserService {
     }
 
     /**
-     * Checks whether a user has a profile.
+     * Checks whether the caller has a profile.
      *
-     * @param userId the identifier of the user (the Keycloak {@code sub})
-     * @return {@code true} if a profile with the given identifier exists
+     * <p>Only the caller's own id can be confirmed. For any other id the answer is {@code false},
+     * so this cannot be used to find out which accounts exist.
+     *
+     * @param userId the identifier being asked about (the Keycloak {@code sub})
+     * @param callerId the identifier of the caller, taken from their verified token
+     * @return {@code true} if {@code userId} is the caller's own id and a profile exists for it
      */
-    public boolean existsById(String userId) {
-        return repository.existsById(userId);
+    public boolean existsById(String userId, String callerId) {
+        return userId.equals(callerId) && repository.existsById(userId);
     }
 
     /**
