@@ -24,7 +24,7 @@ It is built as a set of independent Spring Boot microservices. Clients talk to a
 2. **Create a profile.** The first call to `GET /api/users/me` creates the user's profile in the User Service from the token's claims. Later calls return it.
 3. **Track an activity.** The Activity Service validates the request, takes the user from the token (not from the request), checks with the User Service (forwarding the caller's token) that the user has a profile, saves the activity to MongoDB, and returns immediately.
 4. **Publish.** The saved activity is published to RabbitMQ as JSON. If publishing fails the failure is logged and the activity is still saved.
-5. **Recommend.** The AI Service consumes the message, builds a prompt from the activity, and asks Gemini for a structured JSON reply.
+5. **Recommend.** The AI Service consumes the message, builds a prompt from the activity, and asks Gemini for a structured JSON reply. If processing fails, the message is tried up to 3 times in total, then moved to a dead-letter queue instead of being lost or retried forever (see [Failed messages](#failed-messages-and-the-dead-letter-queue)).
 6. **Store and serve.** The reply is parsed into a `Recommendation` (analysis, improvements, suggestions, safety notes), saved to MongoDB, and served to its owner.
 
 ## Architecture
@@ -52,6 +52,8 @@ flowchart TD
     as -->|publish| ex{{"activity.exchange"}}
     ex --> q[["activity.queue"]]
     q -->|consume| ai
+    q -->|"rejected after 3 attempts"| dlx{{"activity.dlx"}}
+    dlx --> dlq[["activity.dlq"]]
     ai -->|HTTPS| gem["Gemini API"]
 
     cfg["Config Server :8888"] -.->|config at startup| gw
@@ -125,7 +127,7 @@ Central configuration for the Gateway, User, Activity and AI services. It serves
 
 | File | Applies to |
 |---|---|
-| `application.properties` | every client: Eureka URL, RabbitMQ connection, and the queue, exchange and routing key names |
+| `application.properties` | every client: Eureka URL, RabbitMQ connection, and the queue, exchange, routing key and dead-letter names |
 | `gateway.properties` | Gateway: port, routes, Keycloak issuer URI |
 | `user-service.properties` | User Service: port, PostgreSQL, Keycloak issuer URI |
 | `activity-service.properties` | Activity Service: port, MongoDB, Keycloak issuer URI |
@@ -176,6 +178,18 @@ Generates and serves personalised recommendations for logged activities. It is a
 
 It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. The reply is parsed into a `Recommendation` and saved to MongoDB. A recommendation contains a structured analysis (overall, pace, heart rate, calories) plus lists of improvements, suggestions and safety notes. Endpoints return the caller's recommendations, or the recommendation for one of the caller's activities.
 
+### Failed messages and the dead-letter queue
+Any failure while processing an activity (a Gemini error, a reply that is not the expected JSON, a database error) is retried by the listener: **3 attempts in total**, about a second apart. If the last attempt fails, the message is rejected without being requeued, and RabbitMQ moves it to the **dead-letter queue** `activity.dlq` through the dead-letter exchange `activity.dlx`. A message whose body cannot even be read as an activity goes there straight away. Either way the message is kept, with its original content and an `x-death` header recording where it came from, instead of being lost or retried forever.
+
+| | |
+|---|---|
+| **Look at failed messages** | RabbitMQ management UI (http://localhost:15672) → Queues → `activity.dlq` → Get messages (keep "Nack message requeue true" so they stay). Or `docker exec rabbit rabbitmqctl list_queues name messages`. |
+| **Change the number of attempts** | `spring.rabbitmq.listener.simple.retry.max-retries` in `aiservice/src/main/resources/application.properties`. It counts *retries*, so attempts = retries + 1 (`max-retries=2` means 3 attempts). |
+| **Names** | `rabbitmq.dlx.name`, `rabbitmq.dlq.name` and `rabbitmq.dlq.routing.key` in the config server's shared `configs/application.properties`. |
+| **Replaying** | Not automated yet. Fix the cause, then move the messages back to `activity.exchange` by hand. |
+
+The activity queue's dead-letter settings are fixed when the queue is first created. Both services declare the queue and must declare it identically, and a broker that already has an `activity.queue` without these settings refuses the new declaration (`PRECONDITION_FAILED`): delete the old queue once (management UI, or `docker exec rabbit rabbitmqctl delete_queue activity.queue`) and restart the services.
+
 ## Features
 
 - **Event-driven.** Saving an activity never waits for the AI. The Activity Service publishes to RabbitMQ and returns, and the AI Service works through the queue at its own pace.
@@ -189,6 +203,7 @@ It listens on `activity.queue` for activities published by the Activity Service,
 - **Input validation.** Bean Validation on activity requests. Invalid input returns a 400 listing every failed field.
 - **Consistent errors.** Each service has a `@RestControllerAdvice` that maps specific exceptions to HTTP statuses and a uniform JSON body. See [Error Handling](#error-handling).
 - **Resilient publishing.** A RabbitMQ outage does not lose the workout. It is saved first, and the publish failure is logged.
+- **No lost or looping messages.** A message that cannot be processed is retried 3 times, then parked in a dead-letter queue with its content intact.
 
 ## Error Handling
 
@@ -306,7 +321,7 @@ Secrets and environment-specific values are read from environment variables, nev
 | `RABBITMQ_USERNAME` | Activity, AI | no | Broker username, default `guest` |
 | `RABBITMQ_PASSWORD` | Activity, AI | no | Broker password, default `guest` |
 
-The queue, exchange and routing key names (`rabbitmq.queue.name`, `rabbitmq.exchange.name`, `rabbitmq.routing.key`) are defined once in the config server's shared `application.properties`.
+The queue, exchange and routing key names (`rabbitmq.queue.name`, `rabbitmq.exchange.name`, `rabbitmq.routing.key`) and the dead-letter names (`rabbitmq.dlx.name`, `rabbitmq.dlq.name`, `rabbitmq.dlq.routing.key`) are defined once in the config server's shared `configs/application.properties`. The listener's retry settings are part of the AI Service itself, in its own `application.properties`.
 
 ```bash
 export DB_USERNAME=postgres
@@ -395,7 +410,9 @@ Each business service follows the same layered layout:
 - The Activity Service rejects activities until the user has called `GET /api/users/me` once, because the profile does not exist before that.
 - The Keycloak issuer URI is hard-coded to `localhost:8080` in the config files, and there are no role-based rules yet.
 - The Keycloak client uses direct access grants (the password grant) for convenience in local testing. Use the authorization code flow with PKCE before deploying.
-- A message whose processing fails (Gemini error, a reply that is not the expected JSON even after unwrapping a code fence, database error) is requeued immediately and retried without limit. Retry limits and a dead-letter queue are not configured.
+- Dead-lettered messages wait in `activity.dlq` until someone deals with them: there is no automatic replay, alert or expiry, and nothing consumes that queue.
+- The retry pauses block the listener thread, so one failing message delays the ones behind it for a few seconds. The pause is a fixed interval, not a growing back-off.
+- Changing the activity queue's dead-letter settings on a broker that already has the queue means deleting the queue first.
 - A redelivered message can produce a second recommendation for the same activity.
 - The `users` table is managed by `ddl-auto=update`, which never drops old columns. After the move to Keycloak the old `password` column and `NOT NULL` constraint must be dropped by hand on an existing database.
 - Test coverage is limited to the default context-load tests, which need the config server running.
@@ -408,7 +425,8 @@ Each business service follows the same layered layout:
 - [x] Centralised error handling with proper HTTP status codes
 - [x] Move identity and passwords to Keycloak (profile-only User Service)
 - [x] Request validation for activities
-- [ ] Retry limits and a dead-letter queue for failed messages
+- [x] Retry limits and a dead-letter queue for failed messages
+- [ ] Replay or alert on dead-lettered messages
 - [ ] Avoid duplicate recommendations when a message is redelivered
 - [x] JWT validation at the gateway with Keycloak
 - [x] Activity Service takes the user from the token and enforces ownership
@@ -433,8 +451,28 @@ Each business service follows the same layered layout:
 - **Gateway fails with "port already in use":** Keycloak uses 8080 and the gateway uses 8081. Check that nothing else is on those ports.
 - **Activity request returns 503:** the Activity Service cannot reach the User Service. Check that Eureka is running and that both services are registered in it (wait about a minute after starting them), or restart the Activity Service.
 - **A service cannot connect to the config server or its database:** check the port you are calling. The config server is on 8888 and answers almost any path with its own JSON; the services are on 8000, 8001 and 8002.
-- **No recommendation appears:** check the AI Service log for Gemini errors and confirm `GEMINI_API_KEY` is set. A failing message is retried continuously, so look for repeated errors.
+- **No recommendation appears:** check the AI Service log for Gemini errors and confirm `GEMINI_API_KEY` is set. A failing message is tried 3 times and then parked in `activity.dlq`, so look for three errors in a row and check that queue.
+- **A service fails with `PRECONDITION_FAILED ... inequivalent arg 'x-dead-letter-exchange'`:** `activity.queue` already exists on the broker without dead-letter settings. Delete it once and restart (see [Failed messages](#failed-messages-and-the-dead-letter-queue)).
+- **A service fails with `Could not resolve placeholder 'rabbitmq.dlx.name'`:** the three dead-letter names are missing from the config server's `configs/application.properties`, or the config server was not restarted after adding them.
 - **Activity saves but nothing reaches the queue:** RabbitMQ was down at publish time. The failure is logged by the Activity Service and the activity is not re-sent.
+
+## Tests
+
+Unit tests need nothing running. Each service's `contextLoads` test starts the whole application and needs the config server, databases and so on, so run the others by name instead of a bare `./mvnw test`:
+
+```bash
+cd userservice     && ./mvnw -Dtest='KeycloakRoleConverterTest,UserServiceTest*,GlobalExceptionHandlerTest' test
+cd activityservice && ./mvnw -Dtest='ActivityServiceTest*,RabbitMqTopologyTest' test
+cd aiservice       && ./mvnw -Dtest='RecommendationServiceTest*,ActivityAiServiceTest*,ActivityMessageListenerTest,RabbitMqTopologyTest' test
+```
+
+`ActivityMessageListenerDeadLetterTest` (AI Service) is an integration test: it starts a real RabbitMQ in a throwaway Docker container and checks retries and dead-lettering end to end. It needs Docker, takes about a minute, and is skipped if Docker is not available:
+
+```bash
+cd aiservice && ./mvnw -Dtest=ActivityMessageListenerDeadLetterTest test
+```
+
+The `*Test*` classes with nested groups need the trailing `*` (as above), or Maven reports zero tests. No test calls Gemini.
 
 ## License
 

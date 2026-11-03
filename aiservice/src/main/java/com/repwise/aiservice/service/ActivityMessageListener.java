@@ -15,6 +15,12 @@ import org.springframework.stereotype.Service;
  * to {@link Activity} using the parameter type of the listener method, not the producer's class
  * name. Each activity is passed to {@link ActivityAiService} to generate a recommendation, which
  * is then saved through {@link RecommendationRepository}.
+ *
+ * <p>Failures are not retried forever and not lost. Every failure must reach the message
+ * container as an exception, because it reacts by retrying the delivery up to three times in
+ * total (the {@code spring.rabbitmq.listener.simple.retry.*} settings in
+ * {@code application.properties}) and then rejecting the message without requeueing it. The
+ * activity queue then dead-letters it to the dead-letter queue, where it waits to be inspected.
  */
 @Slf4j
 @Service
@@ -27,9 +33,15 @@ public class ActivityMessageListener {
     /**
      * Handles one activity event from the queue.
      *
-     * <p>The message is acknowledged when this method returns normally. If it throws, Spring
-     * rejects the message and, by default, requeues it. That includes a failed Gemini call or
-     * an unparseable reply or a failed database save, so the message is retried until it succeeds.
+     * <p>The message is acknowledged when this method returns normally. If it throws, which
+     * includes a failed Gemini call, a reply that is not the expected JSON and a failed database
+     * save, the delivery is retried after a short pause. After the third attempt the message is
+     * rejected without being requeued and moves to the dead-letter queue. A message whose body
+     * cannot be converted to an {@link Activity} never reaches this method and goes to the
+     * dead-letter queue straight away.
+     *
+     * <p>Do not catch exceptions here: a swallowed failure would acknowledge the message and lose
+     * it silently.
      *
      * @param activity the activity that was recorded
      */
