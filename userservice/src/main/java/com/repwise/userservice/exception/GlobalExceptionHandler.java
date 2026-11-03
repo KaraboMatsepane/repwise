@@ -26,6 +26,13 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.NOT_FOUND, ex.getMessage(), request, List.of());
     }
 
+    /** The token has no email, so a first-time user's profile cannot be created. */
+    @ExceptionHandler(MissingEmailException.class)
+    public ResponseEntity<ErrorResponse> handleMissingEmail(
+            MissingEmailException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, ex.getMessage(), request, List.of());
+    }
+
     /** Raised by {@code @Valid} when a request body breaks a Bean Validation rule. */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(

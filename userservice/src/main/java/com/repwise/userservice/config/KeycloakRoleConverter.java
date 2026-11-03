@@ -24,8 +24,8 @@ import java.util.Map;
  * {@code ROLE_} prefix is what Spring's {@code hasRole("ADMIN")} checks for.
  *
  * <p>Only realm roles are read, not client roles ({@code resource_access}). A token with no
- * {@code realm_access} claim, or one whose {@code roles} is not a list, yields no authorities
- * instead of an error. Because it replaces Spring's default converter, {@code scope} claims no
+ * {@code realm_access} claim, or one whose {@code realm_access} is not an object or whose
+ * {@code roles} is not a list, yields no authorities instead of an error. Because it replaces Spring's default converter, {@code scope} claims no
  * longer become {@code SCOPE_*} authorities; nothing in this service uses them.
  *
  * <p>Roles are copied into the token when Keycloak issues it, so a role assigned after a token
@@ -42,11 +42,11 @@ public class KeycloakRoleConverter implements Converter<Jwt, Collection<GrantedA
      */
     @Override
     public Collection<GrantedAuthority> convert(Jwt jwt) {
-        Map<String, Object> realmAccess = jwt.getClaim("realm_access");
+        Object realmAccess = jwt.getClaim("realm_access");
 
-        if (realmAccess == null) return List.of();
+        if (!(realmAccess instanceof Map<?, ?> realmAccessClaim)) return List.of();
 
-        Object roles = realmAccess.get("roles");
+        Object roles = realmAccessClaim.get("roles");
 
         if (!(roles instanceof Collection<?> roleNames)) return List.of();
 

@@ -80,7 +80,8 @@ public class UserController {
      *
      * <p>The first call for a Keycloak user creates the profile from the token's {@code sub},
      * {@code email}, {@code given_name} and {@code family_name} claims. Later calls return the
-     * stored profile.
+     * stored profile. A first-time user whose token has no email gets {@code 400}, because a
+     * profile cannot be created without one.
      *
      * @param jwt the verified access token of the caller
      * @return {@code 200 OK} with the caller's profile

@@ -1,6 +1,7 @@
 package com.repwise.userservice.service;
 
 import com.repwise.userservice.dto.UserResponse;
+import com.repwise.userservice.exception.MissingEmailException;
 import com.repwise.userservice.exception.UserNotFoundException;
 import com.repwise.userservice.model.User;
 import com.repwise.userservice.repository.UserRepository;
@@ -87,8 +88,11 @@ public class UserService {
      * row. Two simultaneous first requests for the same user could both try to insert; the loser
      * fails on the primary key.
      *
+     * <p>An email address is required to create a profile, but not to return an existing one.
+     *
      * @param jwt the verified access token of the caller
      * @return the caller's profile
+     * @throws MissingEmailException if the profile has to be created and the token has no email
      */
     public UserResponse getOrCreateFromToken(Jwt jwt) {
         User user = repository.findById(jwt.getSubject())
@@ -101,16 +105,23 @@ public class UserService {
     /**
      * Builds and saves a new profile from the claims of a verified token.
      *
-     * <p>The token must contain an {@code email} claim, because the column is not nullable.
+     * <p>The token must contain a non-blank {@code email} claim, because the column is not
+     * nullable. This is checked up front so the caller gets a clear error and nothing is saved.
      *
      * @param jwt the verified access token
      * @return the saved profile
+     * @throws MissingEmailException if the token has no email, or a blank one
      */
     private User createProfileFrom(Jwt jwt) {
+        String email = jwt.getClaimAsString("email");
+        if (email == null || email.isBlank()) {
+            throw new MissingEmailException();
+        }
+
         User user = new User();
 
         user.setId(jwt.getSubject());
-        user.setEmail(jwt.getClaimAsString("email"));
+        user.setEmail(email);
         user.setFirstName(jwt.getClaimAsString("given_name"));
         user.setLastName(jwt.getClaimAsString("family_name"));
 

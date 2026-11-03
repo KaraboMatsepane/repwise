@@ -160,7 +160,7 @@ Stores user profiles. Identity (sign-up, credentials, login, tokens) belongs to 
 
 It reads Keycloak realm roles from the token's `realm_access.roles` claim and exposes them as `ROLE_*` authorities (the role `admin` becomes `ROLE_ADMIN`), ready for `hasRole` rules; `GET /api/users/{id}` lets users with `ROLE_ADMIN` read any profile.
 
-A profile's id is the user's Keycloak id (the token's `sub` claim). `GET /api/users/me` returns the caller's profile and creates it from the token's `email`, `given_name` and `family_name` claims on first use, so the Keycloak user needs an email. Profiles are stored in PostgreSQL through Spring Data JPA with creation and update timestamps and a `USER` or `ADMIN` role. `GET /api/users/{id}/validate` is a lightweight existence check used by the Activity Service, which forwards the caller's token.
+A profile's id is the user's Keycloak id (the token's `sub` claim). `GET /api/users/me` returns the caller's profile and creates it from the token's `email`, `given_name` and `family_name` claims on first use, so the Keycloak user needs an email; without one, a first-time user gets a 400 and no profile is created. Profiles are stored in PostgreSQL through Spring Data JPA with creation and update timestamps and a `USER` or `ADMIN` role. `GET /api/users/{id}/validate` is a lightweight existence check used by the Activity Service, which forwards the caller's token.
 
 ### Activity Service
 Records and retrieves workouts. It is an OAuth2 resource server: every endpoint needs a valid access token, and the token's `sub` claim is the owner of each activity. The request body carries no user id, users only see their own activities, and another user's activity id returns 404. Before saving an activity it calls the User Service through a load-balanced `WebClient` (`http://USER-SERVICE`, resolved via Eureka) to confirm the user has a profile, and rejects the request if not. Activities are stored in MongoDB and support a free-form `metrics` map for type-specific data.
@@ -209,7 +209,7 @@ Each service with a REST API has a `@RestControllerAdvice` class (`exception/Glo
 
 | Status | When |
 |---|---|
-| `400` | Validation failed, or malformed JSON or unknown enum value |
+| `400` | Validation failed, malformed JSON or unknown enum value, or a first-time user's token has no email address (`GET /api/users/me`) |
 | `401` | Missing, expired or invalid access token (sent by the security filter with an empty body, not in the shape above) |
 | `404` | User, activity or recommendation not found, an activity or recommendation that belongs to another user, or the caller has no profile yet when tracking an activity |
 | `503` | The Activity Service cannot reach the User Service, or it responds with an error |
@@ -429,7 +429,7 @@ Each business service follows the same layered layout:
 - **Gateway or service returns 401:** the token is missing, expired (they last about 5 minutes), or was issued by a different issuer than `spring.security.oauth2.resourceserver.jwt.issuer-uri`. Compare the token's `iss` claim with that property exactly, and check the property name is spelled `issuer-uri`, the port is Keycloak's (8080) and the value has no quotes. A broken `Authorization` header, such as `Bearer ` followed by an empty shell variable, is rejected before the request is processed.
 - **A service fails with "required a bean of type JwtDecoder":** the `issuer-uri` property is not reaching it. Check the spelling and restart the config server, which serves the files from its own resources.
 - **Tracking an activity returns 404 "User not found":** call `GET /api/users/me` once first so your profile exists.
-- **`/api/users/me` returns 500:** the Keycloak user has no email, which the profile requires.
+- **`/api/users/me` returns 400 "Your account has no email address":** the Keycloak user has no email, which the profile requires. Add one to the user in the admin console and request a new token.
 - **Gateway fails with "port already in use":** Keycloak uses 8080 and the gateway uses 8081. Check that nothing else is on those ports.
 - **Activity request returns 503:** the Activity Service cannot reach the User Service. Check that Eureka is running and that both services are registered in it (wait about a minute after starting them), or restart the Activity Service.
 - **A service cannot connect to the config server or its database:** check the port you are calling. The config server is on 8888 and answers almost any path with its own JSON; the services are on 8000, 8001 and 8002.
