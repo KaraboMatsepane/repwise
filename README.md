@@ -415,7 +415,7 @@ Each business service follows the same layered layout:
 - Changing the activity queue's dead-letter settings on a broker that already has the queue means deleting the queue first.
 - A redelivered message can produce a second recommendation for the same activity.
 - The `users` table is managed by `ddl-auto=update`, which never drops old columns. After the move to Keycloak the old `password` column and `NOT NULL` constraint must be dropped by hand on an existing database.
-- Test coverage is partial. The User, Activity and AI services have unit tests for their business logic, but the controllers, the security configuration and most exception handlers have none yet, and the Gateway, Config Server and Eureka have only the default context-load tests, which need the config server running. The only integration test is the AI Service's dead-letter test (see [Tests](#tests)).
+- Test coverage is partial. The User, Activity and AI services have unit tests for their business logic, and their exception handlers are unit-tested where they hold logic (the generic 500 that hides internal details, the validation `details` list and the 401 for a rejected forwarded token), but the controllers, the security configuration and the routing of exceptions to the handlers through Spring have no tests yet, and the Gateway, Config Server and Eureka have only the default context-load tests, which need the config server running. The only integration test is the AI Service's dead-letter test (see [Tests](#tests)).
 
 **Roadmap**
 - [x] Centralised configuration with a config server
@@ -461,9 +461,9 @@ Each business service follows the same layered layout:
 Unit tests need nothing running. Each service's `contextLoads` test starts the whole application and needs the config server, databases and so on, so run the others by name instead of a bare `./mvnw test`:
 
 ```bash
-cd userservice     && ./mvnw -Dtest='KeycloakRoleConverterTest,UserServiceTest*,GlobalExceptionHandlerTest' test
+cd userservice     && ./mvnw -Dtest='KeycloakRoleConverterTest,UserServiceTest*,GlobalExceptionHandlerTest*' test
 cd activityservice && ./mvnw -Dtest='ActivityServiceTest*,UserValidationServiceTest*,GlobalExceptionHandlerTest*,RabbitMqTopologyTest' test
-cd aiservice       && ./mvnw -Dtest='RecommendationServiceTest*,ActivityAiServiceTest*,GeminiServiceTest*,ActivityMessageListenerTest,RabbitMqTopologyTest' test
+cd aiservice       && ./mvnw -Dtest='RecommendationServiceTest*,ActivityAiServiceTest*,GeminiServiceTest*,GlobalExceptionHandlerTest*,ActivityMessageListenerTest,RabbitMqTopologyTest' test
 ```
 
 `ActivityMessageListenerDeadLetterTest` (AI Service) is an integration test: it starts a real RabbitMQ in a throwaway Docker container and checks retries and dead-lettering end to end. It needs Docker, takes about a minute, and is skipped if Docker is not available:
