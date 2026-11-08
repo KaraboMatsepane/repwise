@@ -3,6 +3,7 @@ package com.repwise.activityservice.service;
 import com.repwise.activityservice.dto.ActivityRequest;
 import com.repwise.activityservice.dto.ActivityResponse;
 import com.repwise.activityservice.exception.ActivityNotFoundException;
+import com.repwise.activityservice.exception.ForwardedTokenRejectedException;
 import com.repwise.activityservice.exception.InvalidUserException;
 import com.repwise.activityservice.exception.UserServiceUnavailableException;
 import com.repwise.activityservice.model.Activity;
@@ -247,6 +248,18 @@ class ActivityServiceTest {
 
             assertThatThrownBy(() -> service.trackActivity(runRequest(), tokenFor(ALICE, ALICE_TOKEN)))
                     .isInstanceOf(UserServiceUnavailableException.class);
+
+            verifyNoInteractions(repository, rabbitTemplate);
+        }
+
+        @Test
+        @DisplayName("when the user service rejects the token the error is passed on and nothing is saved or published")
+        void rejectedTokenIsPassedOn() {
+            when(userValidationService.validateUser(ALICE, ALICE_TOKEN))
+                    .thenThrow(new ForwardedTokenRejectedException(new RuntimeException()));
+
+            assertThatThrownBy(() -> service.trackActivity(runRequest(), tokenFor(ALICE, ALICE_TOKEN)))
+                    .isInstanceOf(ForwardedTokenRejectedException.class);
 
             verifyNoInteractions(repository, rabbitTemplate);
         }

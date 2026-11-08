@@ -165,7 +165,7 @@ It reads Keycloak realm roles from the token's `realm_access.roles` claim and ex
 A profile's id is the user's Keycloak id (the token's `sub` claim). `GET /api/users/me` returns the caller's profile and creates it from the token's `email`, `given_name` and `family_name` claims on first use, so the Keycloak user needs an email; without one, a first-time user gets a 400 and no profile is created. Profiles are stored in PostgreSQL through Spring Data JPA with creation and update timestamps and a `USER` or `ADMIN` role. `GET /api/users/{id}/validate` is a lightweight existence check used by the Activity Service, which forwards the caller's token.
 
 ### Activity Service
-Records and retrieves workouts. It is an OAuth2 resource server: every endpoint needs a valid access token, and the token's `sub` claim is the owner of each activity. The request body carries no user id, users only see their own activities, and another user's activity id returns 404. Before saving an activity it calls the User Service through a load-balanced `WebClient` (`http://USER-SERVICE`, resolved via Eureka) to confirm the user has a profile, and rejects the request if not. Activities are stored in MongoDB and support a free-form `metrics` map for type-specific data.
+Records and retrieves workouts. It is an OAuth2 resource server: every endpoint needs a valid access token, and the token's `sub` claim is the owner of each activity. The request body carries no user id, users only see their own activities, and another user's activity id returns 404. Before saving an activity it calls the User Service through a load-balanced `WebClient` (`http://USER-SERVICE`, resolved via Eureka) to confirm the user has a profile, and rejects the request if not. If the User Service rejects the forwarded token (for example it expired between the two calls), the request fails with 401 so the client knows to get a new token. Activities are stored in MongoDB and support a free-form `metrics` map for type-specific data.
 
 Requests are validated before anything else happens: `type`, `duration` (greater than 0), `caloriesBurned` (0 or more) and `startTime` are required.
 
@@ -225,9 +225,9 @@ Each service with a REST API has a `@RestControllerAdvice` class (`exception/Glo
 | Status | When |
 |---|---|
 | `400` | Validation failed, malformed JSON or unknown enum value, or a first-time user's token has no email address (`GET /api/users/me`) |
-| `401` | Missing, expired or invalid access token (sent by the security filter with an empty body, not in the shape above) |
+| `401` | Missing, expired or invalid access token (sent by the security filter with an empty body, not in the shape above), or, when tracking an activity, the User Service rejected the forwarded token (sent in the shape above) |
 | `404` | User, activity or recommendation not found, an activity or recommendation that belongs to another user, or the caller has no profile yet when tracking an activity |
-| `503` | The Activity Service cannot reach the User Service, or it responds with an error |
+| `503` | The Activity Service cannot reach the User Service, or it responds with any error other than 401 |
 | `500` | Any unhandled error |
 
 Errors raised inside the RabbitMQ listener of the AI Service are not HTTP errors and are not covered by this.
@@ -406,7 +406,6 @@ Each business service follows the same layered layout:
 **Known limitations**
 - Only `GET /api/users/{id}` uses roles (admins can read any profile). The Activity and AI services do not read roles, so there is no admin access to other users' activities or recommendations, and `/validate` is own-id only even for admins.
 - The Activity Service forwards the caller's own access token to the User Service. Tokens are not restricted to a particular audience, so any service that receives one could replay it elsewhere. Add an audience check or use token exchange before production.
-- If the forwarded token is rejected by the User Service (for example it expires between the two calls), the Activity Service reports a 503 "user service unavailable", not a 401.
 - The Activity Service rejects activities until the user has called `GET /api/users/me` once, because the profile does not exist before that.
 - The Keycloak issuer URI is hard-coded to `localhost:8080` in the config files, and there are no role-based rules yet.
 - The Keycloak client uses direct access grants (the password grant) for convenience in local testing. Use the authorization code flow with PKCE before deploying.
@@ -415,7 +414,7 @@ Each business service follows the same layered layout:
 - Changing the activity queue's dead-letter settings on a broker that already has the queue means deleting the queue first.
 - A redelivered message can produce a second recommendation for the same activity.
 - The `users` table is managed by `ddl-auto=update`, which never drops old columns. After the move to Keycloak the old `password` column and `NOT NULL` constraint must be dropped by hand on an existing database.
-- Test coverage is limited to the default context-load tests, which need the config server running.
+- Test coverage is partial. The User, Activity and AI services have unit tests for their business logic, but `GeminiService`, the controllers, the security configuration and most exception handlers have none yet, and the Gateway, Config Server and Eureka have only the default context-load tests, which need the config server running. The only integration test is the AI Service's dead-letter test (see [Tests](#tests)).
 
 **Roadmap**
 - [x] Centralised configuration with a config server
@@ -462,7 +461,7 @@ Unit tests need nothing running. Each service's `contextLoads` test starts the w
 
 ```bash
 cd userservice     && ./mvnw -Dtest='KeycloakRoleConverterTest,UserServiceTest*,GlobalExceptionHandlerTest' test
-cd activityservice && ./mvnw -Dtest='ActivityServiceTest*,RabbitMqTopologyTest' test
+cd activityservice && ./mvnw -Dtest='ActivityServiceTest*,UserValidationServiceTest*,GlobalExceptionHandlerTest*,RabbitMqTopologyTest' test
 cd aiservice       && ./mvnw -Dtest='RecommendationServiceTest*,ActivityAiServiceTest*,ActivityMessageListenerTest,RabbitMqTopologyTest' test
 ```
 

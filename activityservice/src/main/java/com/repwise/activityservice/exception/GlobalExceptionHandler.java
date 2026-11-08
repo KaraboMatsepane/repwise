@@ -3,6 +3,7 @@ package com.repwise.activityservice.exception;
 import com.repwise.activityservice.dto.ErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -31,6 +32,25 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleInvalidUser(
             InvalidUserException ex, HttpServletRequest request) {
         return build(HttpStatus.NOT_FOUND, ex.getMessage(), request, List.of());
+    }
+
+    /**
+     * The user service rejected the forwarded token, usually because it expired. The client must
+     * get a new token, so this is a {@code 401} with the same {@code WWW-Authenticate} challenge
+     * the security filter sends, not a {@code 503}.
+     */
+    @ExceptionHandler(ForwardedTokenRejectedException.class)
+    public ResponseEntity<ErrorResponse> handleForwardedTokenRejected(
+            ForwardedTokenRejectedException ex, HttpServletRequest request) {
+        log.warn("User service rejected the forwarded token on {}", request.getRequestURI());
+        ErrorResponse body = new ErrorResponse(
+                HttpStatus.UNAUTHORIZED.value(), HttpStatus.UNAUTHORIZED.getReasonPhrase(),
+                "Your access token was rejected, it may have expired. Get a new token and try again.",
+                request.getRequestURI(), LocalDateTime.now(), List.of());
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.WWW_AUTHENTICATE,
+                        "Bearer error=\"invalid_token\", error_description=\"The access token was rejected\"")
+                .body(body);
     }
 
     @ExceptionHandler(UserServiceUnavailableException.class)

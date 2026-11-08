@@ -52,6 +52,7 @@ public class ActivityService {
      *        itself is forwarded to the user service for the profile check
      * @return the saved activity, including its generated identifier and audit timestamps
      * @throws InvalidUserException if the user does not exist
+     * @throws ForwardedTokenRejectedException if the user service rejects the caller's token
      * @throws UserServiceUnavailableException if the user service cannot be reached
      */
     public ActivityResponse trackActivity(ActivityRequest request, Jwt jwt) {
