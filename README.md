@@ -176,10 +176,10 @@ Supported activity types: `RUNNING`, `SWIMMING`, `WALKING`, `CYCLING`, `WEIGHT_L
 ### AI Service
 Generates and serves personalised recommendations for logged activities. It is an OAuth2 resource server: every HTTP endpoint needs a valid access token, a user only sees their own recommendations, and another user's recommendation returns 404. The RabbitMQ listener is not an HTTP entry point and is unaffected.
 
-It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. The reply is parsed into a `Recommendation` and saved to MongoDB. A recommendation contains a structured analysis (overall, pace, heart rate, calories) plus lists of improvements, suggestions and safety notes. Endpoints return the caller's recommendations, or the recommendation for one of the caller's activities.
+It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. Gemini must answer completely within 30 seconds (`GEMINI_API_TIMEOUT`), or the call fails and is retried like any other error, so a hanging Gemini cannot block the listener forever. The reply is parsed into a `Recommendation` and saved to MongoDB. A recommendation contains a structured analysis (overall, pace, heart rate, calories) plus lists of improvements, suggestions and safety notes. Endpoints return the caller's recommendations, or the recommendation for one of the caller's activities.
 
 ### Failed messages and the dead-letter queue
-Any failure while processing an activity (a Gemini error, a reply that is not the expected JSON, a database error) is retried by the listener: **3 attempts in total**, about a second apart. If the last attempt fails, the message is rejected without being requeued, and RabbitMQ moves it to the **dead-letter queue** `activity.dlq` through the dead-letter exchange `activity.dlx`. A message whose body cannot even be read as an activity goes there straight away. Either way the message is kept, with its original content and an `x-death` header recording where it came from, instead of being lost or retried forever.
+Any failure while processing an activity (a Gemini error, no complete answer from Gemini within 30 seconds, a reply that is not the expected JSON, a database error) is retried by the listener: **3 attempts in total**, about a second apart. If the last attempt fails, the message is rejected without being requeued, and RabbitMQ moves it to the **dead-letter queue** `activity.dlq` through the dead-letter exchange `activity.dlx`. A message whose body cannot even be read as an activity goes there straight away. Either way the message is kept, with its original content and an `x-death` header recording where it came from, instead of being lost or retried forever.
 
 | | |
 |---|---|
@@ -316,6 +316,7 @@ Secrets and environment-specific values are read from environment variables, nev
 | `MONGODB_URI` | Activity, AI | yes | MongoDB connection string |
 | `GEMINI_API_KEY` | AI Service | yes | Gemini API key |
 | `GEMINI_API_URL` | AI Service | no | Gemini endpoint, defaults to the `gemini-2.5-flash` `generateContent` endpoint |
+| `GEMINI_API_TIMEOUT` | AI Service | no | How long to wait for Gemini's complete answer before the call fails, default `30s` (accepts values such as `500ms`, `45s`, `2m`) |
 | `RABBITMQ_HOST` | Activity, AI | no | Broker host, default `localhost` |
 | `RABBITMQ_PORT` | Activity, AI | no | Broker port, default `5672` |
 | `RABBITMQ_USERNAME` | Activity, AI | no | Broker username, default `guest` |
@@ -410,7 +411,7 @@ Each business service follows the same layered layout:
 - The Keycloak issuer URI is hard-coded to `localhost:8080` in the config files, and there are no role-based rules yet.
 - The Keycloak client uses direct access grants (the password grant) for convenience in local testing. Use the authorization code flow with PKCE before deploying.
 - Dead-lettered messages wait in `activity.dlq` until someone deals with them: there is no automatic replay, alert or expiry, and nothing consumes that queue.
-- The retry pauses block the listener thread, so one failing message delays the ones behind it for a few seconds. The pause is a fixed interval, not a growing back-off.
+- The retry pauses block the listener thread, so one failing message delays the ones behind it for a few seconds, or up to about a minute and a half if Gemini hangs on every attempt (3 attempts of up to 30 seconds each). The pause is a fixed interval, not a growing back-off.
 - Changing the activity queue's dead-letter settings on a broker that already has the queue means deleting the queue first.
 - A redelivered message can produce a second recommendation for the same activity.
 - The `users` table is managed by `ddl-auto=update`, which never drops old columns. After the move to Keycloak the old `password` column and `NOT NULL` constraint must be dropped by hand on an existing database.
@@ -450,7 +451,7 @@ Each business service follows the same layered layout:
 - **Gateway fails with "port already in use":** Keycloak uses 8080 and the gateway uses 8081. Check that nothing else is on those ports.
 - **Activity request returns 503:** the Activity Service cannot reach the User Service. Check that Eureka is running and that both services are registered in it (wait about a minute after starting them), or restart the Activity Service.
 - **A service cannot connect to the config server or its database:** check the port you are calling. The config server is on 8888 and answers almost any path with its own JSON; the services are on 8000, 8001 and 8002.
-- **No recommendation appears:** check the AI Service log for Gemini errors and confirm `GEMINI_API_KEY` is set. A failing message is tried 3 times and then parked in `activity.dlq`, so look for three errors in a row and check that queue.
+- **No recommendation appears:** check the AI Service log for Gemini errors (including timeouts) and confirm `GEMINI_API_KEY` is set. A failing message is tried 3 times and then parked in `activity.dlq`, so look for three errors in a row and check that queue.
 - **A service fails with `PRECONDITION_FAILED ... inequivalent arg 'x-dead-letter-exchange'`:** `activity.queue` already exists on the broker without dead-letter settings. Delete it once and restart (see [Failed messages](#failed-messages-and-the-dead-letter-queue)).
 - **A service fails with `Could not resolve placeholder 'rabbitmq.dlx.name'`:** the three dead-letter names are missing from the config server's `configs/application.properties`, or the config server was not restarted after adding them.
 - **Activity saves but nothing reaches the queue:** RabbitMQ was down at publish time. The failure is logged by the Activity Service and the activity is not re-sent.
