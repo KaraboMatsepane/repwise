@@ -30,4 +30,12 @@ public interface RecommendationRepository extends MongoRepository<Recommendation
      * @return the recommendation, or empty if none exists
      */
     Optional<Recommendation> findByActivityId(String activityId);
+
+    /**
+     * Checks whether a recommendation has already been generated for an activity.
+     *
+     * @param activityId the identifier of the activity
+     * @return {@code true} if the activity already has a recommendation
+     */
+    boolean existsByActivityId(String activityId);
 }

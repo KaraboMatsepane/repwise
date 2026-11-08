@@ -36,6 +36,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -202,7 +203,7 @@ class ActivityMessageListenerDeadLetterTest {
         awaitDeadLetter();
 
         await().atMost(PATIENCE).untilAsserted(() -> assertThat(messagesWaitingIn(QUEUE)).isZero());
-        verifyNoInteractions(recommendationRepository);
+        verify(recommendationRepository, never()).save(any(Recommendation.class));
     }
 
     @Test
@@ -273,6 +274,28 @@ class ActivityMessageListenerDeadLetterTest {
         verify(activityAiService, times(1)).generateRecommendation(any(Activity.class));
         await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(3))
                 .untilAsserted(() -> assertThat(messagesWaitingIn(DEAD_LETTER_QUEUE)).isZero());
+    }
+
+    // ---- a message for an activity that already has a recommendation ----
+
+    @Test
+    @DisplayName("a redelivered message for an activity that already has a recommendation is acknowledged once, "
+            + "not sent to Gemini again, not saved again and never dead-lettered")
+    void redeliveredMessageIsAcknowledgedWithoutDuplicating() {
+        assertDeadLetterQueueExists();
+        when(recommendationRepository.existsByActivityId("act-1")).thenReturn(true);
+
+        publishActivity("act-1");
+
+        await().atMost(PATIENCE).untilAsserted(() ->
+                verify(recommendationRepository, times(1)).existsByActivityId("act-1"));
+        await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(3)).untilAsserted(() -> {
+            assertThat(messagesWaitingIn(QUEUE)).isZero();
+            assertThat(messagesWaitingIn(DEAD_LETTER_QUEUE)).isZero();
+        });
+        verify(recommendationRepository, times(1)).existsByActivityId("act-1");
+        verifyNoInteractions(activityAiService);
+        verify(recommendationRepository, never()).save(any(Recommendation.class));
     }
 
     // ---- a message that can never be processed ----

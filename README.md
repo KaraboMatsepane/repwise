@@ -153,12 +153,12 @@ Single entry point for clients (reactive Spring Cloud Gateway Server WebFlux, ru
 
 The gateway is an OAuth2 resource server. Users log in to Keycloak, which issues a signed JWT access token, and the client sends it as `Authorization: Bearer <token>`. The gateway (`SecurityConfig`) checks the signature, issuer and expiry on every request and returns 401 if the token is missing or invalid. It never sees passwords. It downloads Keycloak's public keys once, using the `issuer-uri` set in `gateway.properties`, and verifies tokens locally.
 
-Every route requires a valid token. Public paths are added with `pathMatchers(...).permitAll()` in `SecurityConfig`. The token is forwarded to the services, and the User and Activity services verify it again themselves, so they are protected even if called directly on their own ports.
+Every route requires a valid token. Public paths are added with `pathMatchers(...).permitAll()` in `SecurityConfig`. The token is forwarded to the services, and the User, Activity and AI services verify it again themselves, so they are protected even if called directly on their own ports.
 
 Paths that match no route return 404. Headers, including `Authorization`, pass through unchanged. If no instance of a target service is registered, the gateway returns 503. Right after a service starts there can be a short delay (about half a minute) before the gateway sees it. The services stay reachable directly on their own ports.
 
 ### User Service
-Stores user profiles. Identity (sign-up, credentials, login, tokens) belongs to Keycloak, so this service has no registration endpoint and stores no passwords. It is an OAuth2 resource server: every endpoint needs a valid access token except the validation endpoint.
+Stores user profiles. Identity (sign-up, credentials, login, tokens) belongs to Keycloak, so this service has no registration endpoint and stores no passwords. It is an OAuth2 resource server: every endpoint needs a valid access token, including the validation endpoint, which the Activity Service calls with the caller's token forwarded.
 
 It reads Keycloak realm roles from the token's `realm_access.roles` claim and exposes them as `ROLE_*` authorities (the role `admin` becomes `ROLE_ADMIN`), ready for `hasRole` rules; `GET /api/users/{id}` lets users with `ROLE_ADMIN` read any profile.
 
@@ -176,7 +176,7 @@ Supported activity types: `RUNNING`, `SWIMMING`, `WALKING`, `CYCLING`, `WEIGHT_L
 ### AI Service
 Generates and serves personalised recommendations for logged activities. It is an OAuth2 resource server: every HTTP endpoint needs a valid access token, a user only sees their own recommendations, and another user's recommendation returns 404. The RabbitMQ listener is not an HTTP entry point and is unaffected.
 
-It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. Gemini must answer completely within 30 seconds (`GEMINI_API_TIMEOUT`), or the call fails and is retried like any other error, so a hanging Gemini cannot block the listener forever. The reply is parsed into a `Recommendation` and saved to MongoDB. A recommendation contains a structured analysis (overall, pace, heart rate, calories) plus lists of improvements, suggestions and safety notes. Endpoints return the caller's recommendations, or the recommendation for one of the caller's activities.
+It listens on `activity.queue` for activities published by the Activity Service, builds a prompt from each one and calls the Gemini API through `WebClient`. Gemini must answer completely within 30 seconds (`GEMINI_API_TIMEOUT`), or the call fails and is retried like any other error, so a hanging Gemini cannot block the listener forever. The reply is parsed into a `Recommendation` and saved to MongoDB. An activity has at most one recommendation: RabbitMQ can deliver the same message more than once, so an activity that already has one is skipped without calling Gemini, and a unique index on `activityId` refuses a second one if two copies are processed at the same moment. Either way the duplicate message is acknowledged, not retried or dead-lettered. A recommendation contains a structured analysis (overall, pace, heart rate, calories) plus lists of improvements, suggestions and safety notes. Endpoints return the caller's recommendations, or the recommendation for one of the caller's activities.
 
 ### Failed messages and the dead-letter queue
 Any failure while processing an activity (a Gemini error, no complete answer from Gemini within 30 seconds, a reply that is not the expected JSON, a database error) is retried by the listener: **3 attempts in total**, about a second apart. If the last attempt fails, the message is rejected without being requeued, and RabbitMQ moves it to the **dead-letter queue** `activity.dlq` through the dead-letter exchange `activity.dlx`. A message whose body cannot even be read as an activity goes there straight away. Either way the message is kept, with its original content and an `x-death` header recording where it came from, instead of being lost or retried forever.
@@ -204,6 +204,7 @@ The activity queue's dead-letter settings are fixed when the queue is first crea
 - **Consistent errors.** Each service has a `@RestControllerAdvice` that maps specific exceptions to HTTP statuses and a uniform JSON body. See [Error Handling](#error-handling).
 - **Resilient publishing.** A RabbitMQ outage does not lose the workout. It is saved first, and the publish failure is logged.
 - **No lost or looping messages.** A message that cannot be processed is retried 3 times, then parked in a dead-letter queue with its content intact.
+- **One recommendation per activity.** A redelivered message never causes a second Gemini call or a second recommendation, enforced by a unique index in MongoDB.
 
 ## Error Handling
 
@@ -413,7 +414,6 @@ Each business service follows the same layered layout:
 - Dead-lettered messages wait in `activity.dlq` until someone deals with them: there is no automatic replay, alert or expiry, and nothing consumes that queue.
 - The retry pauses block the listener thread, so one failing message delays the ones behind it for a few seconds, or up to about a minute and a half if Gemini hangs on every attempt (3 attempts of up to 30 seconds each). The pause is a fixed interval, not a growing back-off.
 - Changing the activity queue's dead-letter settings on a broker that already has the queue means deleting the queue first.
-- A redelivered message can produce a second recommendation for the same activity.
 - The `users` table is managed by `ddl-auto=update`, which never drops old columns. After the move to Keycloak the old `password` column and `NOT NULL` constraint must be dropped by hand on an existing database.
 - Test coverage is partial. The User, Activity and AI services have unit tests for their business logic, and their exception handlers are unit-tested where they hold logic (the generic 500 that hides internal details, the validation `details` list and the 401 for a rejected forwarded token), but the controllers, the security configuration and the routing of exceptions to the handlers through Spring have no tests yet, and the Gateway, Config Server and Eureka have only the default context-load tests, which need the config server running. The only integration test is the AI Service's dead-letter test (see [Tests](#tests)).
 
@@ -427,7 +427,7 @@ Each business service follows the same layered layout:
 - [x] Request validation for activities
 - [x] Retry limits and a dead-letter queue for failed messages
 - [ ] Replay or alert on dead-lettered messages
-- [ ] Avoid duplicate recommendations when a message is redelivered
+- [x] Avoid duplicate recommendations when a message is redelivered
 - [x] JWT validation at the gateway with Keycloak
 - [x] Activity Service takes the user from the token and enforces ownership
 - [x] AI Service verifies tokens and serves recommendations by the token's subject
@@ -455,6 +455,14 @@ Each business service follows the same layered layout:
 - **A service fails with `PRECONDITION_FAILED ... inequivalent arg 'x-dead-letter-exchange'`:** `activity.queue` already exists on the broker without dead-letter settings. Delete it once and restart (see [Failed messages](#failed-messages-and-the-dead-letter-queue)).
 - **A service fails with `Could not resolve placeholder 'rabbitmq.dlx.name'`:** the three dead-letter names are missing from the config server's `configs/application.properties`, or the config server was not restarted after adding them.
 - **Activity saves but nothing reaches the queue:** RabbitMQ was down at publish time. The failure is logged by the Activity Service and the activity is not re-sent.
+- **The AI Service fails at startup with `Cannot create index` for `activityId` (`E11000 duplicate key`):** the `recommendations` collection already holds more than one recommendation for some activity, saved before duplicates were prevented, so MongoDB cannot build the unique index. Keep the oldest recommendation for each activity and delete the rest, then restart. In `mongosh`, connected to the AI Service's database:
+  ```js
+  db.recommendations.aggregate([
+    { $sort: { createdAt: 1 } },
+    { $group: { _id: "$activityId", keep: { $first: "$_id" }, count: { $sum: 1 } } },
+    { $match: { count: { $gt: 1 } } }
+  ]).forEach(g => db.recommendations.deleteMany({ activityId: g._id, _id: { $ne: g.keep } }))
+  ```
 
 ## Tests
 
@@ -463,7 +471,7 @@ Unit tests need nothing running. Each service's `contextLoads` test starts the w
 ```bash
 cd userservice     && ./mvnw -Dtest='KeycloakRoleConverterTest,UserServiceTest*,GlobalExceptionHandlerTest*' test
 cd activityservice && ./mvnw -Dtest='ActivityServiceTest*,UserValidationServiceTest*,GlobalExceptionHandlerTest*,RabbitMqTopologyTest' test
-cd aiservice       && ./mvnw -Dtest='RecommendationServiceTest*,ActivityAiServiceTest*,GeminiServiceTest*,GlobalExceptionHandlerTest*,ActivityMessageListenerTest,RabbitMqTopologyTest' test
+cd aiservice       && ./mvnw -Dtest='RecommendationServiceTest*,ActivityAiServiceTest*,GeminiServiceTest*,GlobalExceptionHandlerTest*,ActivityMessageListenerTest*,RecommendationIndexTest,RabbitMqTopologyTest' test
 ```
 
 `ActivityMessageListenerDeadLetterTest` (AI Service) is an integration test: it starts a real RabbitMQ in a throwaway Docker container and checks retries and dead-lettering end to end. It needs Docker, takes about a minute, and is skipped if Docker is not available:

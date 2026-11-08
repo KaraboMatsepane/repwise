@@ -6,6 +6,7 @@ import com.repwise.aiservice.repository.RecommendationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 /**
@@ -40,8 +41,14 @@ public class ActivityMessageListener {
      * cannot be converted to an {@link Activity} never reaches this method and goes to the
      * dead-letter queue straight away.
      *
-     * <p>Do not catch exceptions here: a swallowed failure would acknowledge the message and lose
-     * it silently.
+     * <p>An activity has at most one recommendation. RabbitMQ can deliver the same message more
+     * than once, so an activity that already has a recommendation is skipped without calling
+     * Gemini, and the message is acknowledged: the work is already done. If two copies are
+     * processed at the same moment, both can pass that check; the unique index on
+     * {@code activityId} then refuses the second save, and that copy is acknowledged too.
+     *
+     * <p>Do not catch other exceptions here: a swallowed failure would acknowledge the message and
+     * lose it silently.
      *
      * @param activity the activity that was recorded
      */
@@ -49,9 +56,22 @@ public class ActivityMessageListener {
     public void processActivity(Activity activity) {
         log.info("Received activity for processing: {}", activity.getId());
 
+        if (recommendationRepository.existsByActivityId(activity.getId())) {
+            log.info("Activity {} already has a recommendation, skipping the redelivered message",
+                    activity.getId());
+            return;
+        }
+
         Recommendation recommendation = activityAiService.generateRecommendation(activity);
 
-        Recommendation saved = recommendationRepository.save(recommendation);
+        Recommendation saved;
+        try {
+            saved = recommendationRepository.save(recommendation);
+        } catch (DuplicateKeyException e) {
+            log.info("Activity {} got a recommendation from a parallel delivery, discarding this one",
+                    activity.getId());
+            return;
+        }
 
         log.info("Saved recommendation {} for activity {}: {}", saved.getId(), activity.getId(), saved);
     }
