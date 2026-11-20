@@ -128,7 +128,7 @@ Central configuration for the Gateway, User, Activity and AI services. It serves
 | File | Applies to |
 |---|---|
 | `application.properties` | every client: Eureka URL, RabbitMQ connection, and the queue, exchange, routing key and dead-letter names |
-| `gateway.properties` | Gateway: port, routes, Keycloak issuer URI |
+| `gateway.properties` | Gateway: port, routes, Keycloak issuer URI, CORS origins |
 | `user-service.properties` | User Service: port, PostgreSQL, Keycloak issuer URI |
 | `activity-service.properties` | Activity Service: port, MongoDB, Keycloak issuer URI |
 | `ai-service.properties` | AI Service: port, MongoDB, Gemini, Keycloak issuer URI |
@@ -154,6 +154,30 @@ Single entry point for clients (reactive Spring Cloud Gateway Server WebFlux, ru
 The gateway is an OAuth2 resource server. Users log in to Keycloak, which issues a signed JWT access token, and the client sends it as `Authorization: Bearer <token>`. The gateway (`SecurityConfig`) checks the signature, issuer and expiry on every request and returns 401 if the token is missing or invalid. It never sees passwords. It downloads Keycloak's public keys once, using the `issuer-uri` set in `gateway.properties`, and verifies tokens locally.
 
 Every route requires a valid token. Public paths are added with `pathMatchers(...).permitAll()` in `SecurityConfig`. The token is forwarded to the services, and the User, Activity and AI services verify it again themselves, so they are protected even if called directly on their own ports.
+
+#### CORS (browser clients)
+
+A frontend served from another origin, such as the Vite dev server on `http://localhost:5173`, can call the gateway from the browser. Only the gateway handles CORS, because browsers only ever talk to the gateway. Before a request with an `Authorization` header, the browser sends a preflight `OPTIONS` request without a token. The gateway's CORS filter answers it before the token check, so the preflight is never rejected with 401 and never reaches a service.
+
+| Rule | Value |
+|---|---|
+| Origins | `CORS_ALLOWED_ORIGINS` (property `repwise.cors.allowed-origins`), default `http://localhost:5173`. Exact scheme, host and port, comma-separated for several, no trailing slash |
+| Methods | `GET`, `POST` |
+| Request headers | `Authorization`, `Content-Type` |
+| Preflight cache | 1 hour |
+
+A request from any other origin, or with another method or header, gets a 403 without CORS headers and the browser blocks it. New methods such as `PUT` or `DELETE` must be added in `SecurityConfig.corsConfigurationSource` before a browser can use them. Requests without an `Origin` header (curl, Postman, service calls) are unaffected: CORS protects the user's browser, while the token check protects the API.
+
+To check a preflight by hand:
+
+```bash
+curl -i -X OPTIONS http://localhost:8081/api/activities \
+  -H "Origin: http://localhost:5173" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: authorization, content-type"
+```
+
+It should return 200 with `Access-Control-Allow-Origin: http://localhost:5173`; another `Origin` or `Access-Control-Request-Method: DELETE` should return 403.
 
 Paths that match no route return 404. Headers, including `Authorization`, pass through unchanged. If no instance of a target service is registered, the gateway returns 503. Right after a service starts there can be a short delay (about half a minute) before the gateway sees it. The services stay reachable directly on their own ports.
 
@@ -196,6 +220,7 @@ The activity queue's dead-letter settings are fixed when the queue is first crea
 - **Service discovery and load balancing.** Every service registers with Eureka. Calls use `lb://` and `http://SERVICE-NAME` URIs instead of hard-coded hosts.
 - **Centralised configuration.** One config server, one shared file for the RabbitMQ names, secrets read from the environment and never committed.
 - **Reactive gateway.** Spring Cloud Gateway on WebFlux, so routing does not block threads.
+- **Browser-ready.** The gateway answers CORS preflights for the configured frontend origins, and refuses other origins.
 - **Database per service.** PostgreSQL for users, MongoDB for activities and recommendations. No service reads another's database.
 - **Session-specific AI output.** The prompt requires every point to be grounded in the logged numbers and the activity type. Gemini is asked for JSON only, and the reply is parsed into a typed `Recommendation`. If the model wraps its JSON in a Markdown code fence (for example ```` ```json ````) or adds a sentence around it, the fenced block is unwrapped; valid JSON is never altered.
 - **Delegated identity.** Keycloak handles sign-up, login and tokens. The gateway and the User, Activity and AI services verify the JWT's signature, issuer and expiry locally, and the platform stores no passwords.
@@ -312,6 +337,7 @@ Secrets and environment-specific values are read from environment variables, nev
 | Variable | Used by | Required | Purpose |
 |---|---|---|---|
 | `CONFIG_SERVER_URL` | Gateway, User, Activity, AI | no | Config server address, default `http://localhost:8888` |
+| `CORS_ALLOWED_ORIGINS` | Gateway | no | Browser origins allowed to call the gateway, comma-separated, default `http://localhost:5173` (see [CORS](#cors-browser-clients)) |
 | `DB_USERNAME` | User Service | yes | PostgreSQL username |
 | `DB_PASSWORD` | User Service | yes | PostgreSQL password |
 | `MONGODB_URI` | Activity, AI | yes | MongoDB connection string |
@@ -448,6 +474,7 @@ Each business service follows the same layered layout:
 - **A service fails with "required a bean of type JwtDecoder":** the `issuer-uri` property is not reaching it. Check the spelling and restart the config server, which serves the files from its own resources.
 - **Tracking an activity returns 404 "User not found":** call `GET /api/users/me` once first so your profile exists.
 - **`/api/users/me` returns 400 "Your account has no email address":** the Keycloak user has no email, which the profile requires. Add one to the user in the admin console and request a new token.
+- **The browser reports a CORS error but the same request works with curl:** the frontend's origin is not allowed, or the request uses a method or header that is not. Check that `CORS_ALLOWED_ORIGINS` matches the address bar exactly (`localhost` and `127.0.0.1` are different origins, as are `http` and `https`, and there is no trailing slash), that the method is in `setAllowedMethods`, and that the config server and then the gateway were restarted after a change. The browser caches a preflight answer for up to an hour, so after changing the rules do a hard reload or tick "Disable cache" in DevTools.
 - **Gateway fails with "port already in use":** Keycloak uses 8080 and the gateway uses 8081. Check that nothing else is on those ports.
 - **Activity request returns 503:** the Activity Service cannot reach the User Service. Check that Eureka is running and that both services are registered in it (wait about a minute after starting them), or restart the Activity Service.
 - **A service cannot connect to the config server or its database:** check the port you are calling. The config server is on 8888 and answers almost any path with its own JSON; the services are on 8000, 8001 and 8002.
