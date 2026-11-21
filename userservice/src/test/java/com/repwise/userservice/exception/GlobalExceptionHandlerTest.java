@@ -52,6 +52,62 @@ class GlobalExceptionHandlerTest {
     }
 
     /**
+     * A first-time user's email already belongs to another profile. Documented as 409 Conflict
+     * with the standard body, and logged because someone has to clean up the old profile.
+     */
+    @Nested
+    @DisplayName("an email already used by another profile")
+    @ExtendWith(OutputCaptureExtension.class)
+    class EmailAlreadyInUse {
+
+        private static final String DATABASE_ERROR =
+                "duplicate key value violates unique constraint \"uk_users_email\"";
+
+        private ResponseEntity<ErrorResponse> handle() {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/users/me");
+            return handler.handleEmailAlreadyInUse(
+                    new EmailAlreadyInUseException(new IllegalStateException(DATABASE_ERROR)), request);
+        }
+
+        @Test
+        @DisplayName("is 409 Conflict with the standard error body, not a server error")
+        void isAConflict() {
+            ResponseEntity<ErrorResponse> response = handle();
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.status()).isEqualTo(409);
+            assertThat(body.error()).isEqualTo("Conflict");
+            assertThat(body.path()).isEqualTo("/api/users/me");
+            assertThat(body.timestamp()).isNotNull();
+            assertThat(body.details()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("tells the user that their email is the problem, without the database's error")
+        void messageExplainsTheProblemWithoutInternals() {
+            ErrorResponse body = handle().getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.message()).containsIgnoringCase("email");
+            assertThat(String.valueOf(body))
+                    .doesNotContain("duplicate key")
+                    .doesNotContain("uk_users_email");
+        }
+
+        @Test
+        @DisplayName("is logged with the database's error, so the old profile can be found")
+        void isLoggedWithItsCause(CapturedOutput output) {
+            handle();
+
+            assertThat(output.getOut() + output.getErr())
+                    .contains("/api/users/me")
+                    .contains(DATABASE_ERROR);
+        }
+    }
+
+    /**
      * README, "Error Handling": "Anything unexpected is logged with its stack trace and returned as
      * a generic 500, so internal details are not exposed."
      */

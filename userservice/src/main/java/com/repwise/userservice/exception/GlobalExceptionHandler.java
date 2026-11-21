@@ -33,6 +33,18 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, ex.getMessage(), request, List.of());
     }
 
+    /**
+     * A first-time user's email is already used by another profile, so theirs cannot be created.
+     * This needs someone to clean up the old profile, so it is logged as well as returned.
+     */
+    @ExceptionHandler(EmailAlreadyInUseException.class)
+    public ResponseEntity<ErrorResponse> handleEmailAlreadyInUse(
+            EmailAlreadyInUseException ex, HttpServletRequest request) {
+        log.warn("Profile not created on {}: email already used by another profile",
+                request.getRequestURI(), ex);
+        return build(HttpStatus.CONFLICT, ex.getMessage(), request, List.of());
+    }
+
     /** Raised by {@code @Valid} when a request body breaks a Bean Validation rule. */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(

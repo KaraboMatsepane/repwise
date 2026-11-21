@@ -1,6 +1,7 @@
 package com.repwise.userservice.service;
 
 import com.repwise.userservice.dto.UserResponse;
+import com.repwise.userservice.exception.EmailAlreadyInUseException;
 import com.repwise.userservice.exception.MissingEmailException;
 import com.repwise.userservice.exception.UserNotFoundException;
 import com.repwise.userservice.model.User;
@@ -13,6 +14,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.time.LocalDateTime;
@@ -23,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -343,6 +347,76 @@ class UserServiceTest {
             assertThat(profile.getEmail()).isEqualTo("alice@example.com");
             assertThat(profile.getFirstName()).isNull();
             assertThat(profile.getLastName()).isNull();
+        }
+
+        /**
+         * Two first requests for the same user at the same moment both find no profile and both
+         * try to create it; the database refuses the second one. Documented: both requests get
+         * the same profile, and only one is created. Another profile with the same email is a
+         * conflict, not a race.
+         */
+        @Nested
+        @DisplayName("when the database refuses the new profile")
+        class WhenTheSaveIsRefused {
+
+            private final DataIntegrityViolationException refused =
+                    new DataIntegrityViolationException("duplicate key value violates unique constraint");
+
+            @Test
+            @DisplayName("because a simultaneous request just created it, that profile is returned instead of an error")
+            void returnsTheProfileASimultaneousRequestCreated() {
+                // Not there when this request looked, there once the other request has saved it.
+                when(repository.findById(ALICE))
+                        .thenReturn(Optional.empty())
+                        .thenReturn(Optional.of(storedUser(ALICE)));
+                when(repository.save(any(User.class))).thenThrow(refused);
+
+                UserResponse profile = service().getOrCreateFromToken(
+                        tokenFor(ALICE, "alice-id@example.com", "First-alice-id", "Last-alice-id"));
+
+                assertThat(profile.getId()).isEqualTo(ALICE);
+                assertThat(profile.getEmail()).isEqualTo("alice-id@example.com");
+                assertThat(profile.getCreatedAt()).isEqualTo(CREATED);
+            }
+
+            @Test
+            @DisplayName("the losing request does not try to save a second profile")
+            void savesOnlyOnce() {
+                when(repository.findById(ALICE))
+                        .thenReturn(Optional.empty())
+                        .thenReturn(Optional.of(storedUser(ALICE)));
+                when(repository.save(any(User.class))).thenThrow(refused);
+
+                service().getOrCreateFromToken(tokenFor(ALICE, "alice-id@example.com", "A", "B"));
+
+                verify(repository, times(1)).save(any());
+            }
+
+            @Test
+            @DisplayName("and no profile exists for the caller, it is reported as the email being in use")
+            void reportsAnEmailConflictWhenNoProfileExistsForTheCaller() {
+                // Another account already has this email, so the caller's own profile never appears.
+                when(repository.findById(ALICE)).thenReturn(Optional.empty());
+                when(repository.save(any(User.class))).thenThrow(refused);
+
+                assertThatThrownBy(() -> service().getOrCreateFromToken(
+                        tokenFor(ALICE, "taken@example.com", "Alice", "Smith")))
+                        .isInstanceOf(EmailAlreadyInUseException.class)
+                        .hasCause(refused);
+            }
+
+            @Test
+            @DisplayName("is not confused with other database failures, which are not hidden")
+            void otherDatabaseFailuresAreNotTreatedAsTheRace() {
+                DataAccessResourceFailureException connectionLost =
+                        new DataAccessResourceFailureException("connection to the database was lost");
+                when(repository.findById(ALICE)).thenReturn(Optional.empty());
+                when(repository.save(any(User.class))).thenThrow(connectionLost);
+
+                assertThatThrownBy(() -> service().getOrCreateFromToken(
+                        tokenFor(ALICE, "alice@example.com", "Alice", "Smith")))
+                        .isSameAs(connectionLost);
+            }
         }
     }
 }
